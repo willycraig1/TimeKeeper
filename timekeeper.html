@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Timekeeper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Timekeeper — local prototype build (2026-04-29)
+  Storage: localStorage (TEMPORARY).
+    TODO: Replace with File System Access API + append-only audit log
+    once office Excel/Word format specs are finalized.
+  Scripts loaded from cdnjs (React, Babel, SheetJS).
+-->
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.development.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.development.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  body { margin: 0; }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  .tk-timeline { cursor: crosshair; user-select: none; }
+  .tk-timeline.tk-dragging { cursor: ns-resize; }
+  .tk-backdrop {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .tk-picker-option:hover { background: #f3f4f6; }
+  .tk-entry-block { transition: box-shadow 0.12s; }
+  .tk-entry-block:hover { box-shadow: 0 2px 8px rgba(15,23,42,0.10); }
+  .tk-entry-block:hover .tk-delete-btn { opacity: 1; }
+  .tk-delete-btn { opacity: 0; transition: opacity 0.12s; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo, useCallback } = React;
+
+// ----- Constants -----------------------------------------------------------
+
+const PALETTE = [
+  "#4f46e5","#3b82f6","#0ea5e9","#06b6d4","#14b8a6","#10b981",
+  "#84cc16","#eab308","#f59e0b","#f97316","#ef4444","#f43f5e",
+  "#ec4899","#d946ef","#a855f7","#8b5cf6","#64748b","#78716c",
+];
+
+const NONBILLABLE_ID = "_nonbillable";
+const NONBILLABLE_DEFAULT = {
+  id: NONBILLABLE_ID,
+  name: "Non-billable (lunch / errands / admin)",
+  code: "",
+  color: "#94a3b8",
+  billable: false,
+};
+
+const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3" };
+
+// Day timeline (vertical, daytimer-style)
+// Default visible range is 7am–7pm; user can extend either end to midnight.
+const DEFAULT_START_HOUR = 7;
+const DEFAULT_END_HOUR = 19;
+const HOUR_PX = 64;              // 64px per hour → 15-min block = 16px (fits 11px text)
+const MIN_SNAP = 15;             // 15-minute snap
+const TARGET_HOURS = 8;
+const RANGE_STORAGE_KEY = "tk_timeline_range_v1";
+
+const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+// ----- Date / time helpers -------------------------------------------------
+
+const fmtDate = d => d.toISOString().split("T")[0];
+const todayStr = () => fmtDate(new Date());
+const dispDate = s => new Date(s + "T12:00:00").toLocaleDateString("en-US",
+  { weekday: "short", month: "short", day: "numeric" });
+const dispDateLong = s => new Date(s + "T12:00:00").toLocaleDateString("en-US",
+  { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+const getMonday = s => {
+  const d = new Date(s + "T12:00:00");
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return fmtDate(d);
+};
+const weekDatesFrom = start => Array.from({ length: 7 }, (_, i) => {
+  const d = new Date(start + "T12:00:00");
+  d.setDate(d.getDate() + i);
+  return fmtDate(d);
+});
+
+const minToHHMM = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const hhmmToMin = s => {
+  const [h, m] = s.split(":").map(Number);
+  return h * 60 + m;
+};
+const minToDisplay = m => {
+  const h = Math.floor(m / 60), mm = m % 60;
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = ((h + 11) % 12) + 1;
+  return `${h12}:${String(mm).padStart(2, "0")} ${ampm}`;
+};
+// Compact form for inline display inside small entry blocks (no AM/PM).
+const minToShort = m => {
+  const h = Math.floor(m / 60), mm = m % 60;
+  const h12 = ((h + 11) % 12) + 1;
+  return `${h12}:${String(mm).padStart(2, "0")}`;
+};
+const snapMin = m => Math.round(m / MIN_SNAP) * MIN_SNAP;
+const hoursToMin = h => Math.round(h * 60);
+
+// ----- Style tokens --------------------------------------------------------
+
+const s = {
+  root: { fontFamily: "system-ui, -apple-system, sans-serif", minHeight: "100vh", background: "#f9fafb" },
+  nav: { background: "white", borderBottom: "1px solid #e5e7eb", padding: "0 20px", position: "sticky", top: 0, zIndex: 10 },
+  navInner: { maxWidth: 940, margin: "0 auto", display: "flex", alignItems: "center" },
+  brand: { padding: "12px 0", marginRight: 24 },
+  brandName: { fontSize: 15, fontWeight: 600, color: "#111827", letterSpacing: "-0.01em" },
+  brandSub: { fontSize: 10, color: "#9ca3af", letterSpacing: "0.07em", marginTop: 1 },
+  tab: a => ({
+    padding: "14px 14px", background: "none", border: "none",
+    borderBottom: a ? "2px solid #4f46e5" : "2px solid transparent",
+    color: a ? "#4f46e5" : "#6b7280", fontSize: 13, fontWeight: a ? 500 : 400,
+    cursor: "pointer", transition: "all 0.12s", whiteSpace: "nowrap"
+  }),
+  main: { maxWidth: 940, margin: "0 auto", padding: "20px" },
+  card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 10, padding: "18px 20px" },
+  label: { fontSize: 11, fontWeight: 500, color: "#6b7280", letterSpacing: "0.06em", marginBottom: 5, display: "block" },
+  input: { width: "100%", border: "1px solid #d1d5db", borderRadius: 6, padding: "8px 10px", fontSize: 13, color: "#111827", background: "white", boxSizing: "border-box", outline: "none" },
+  btnPrimary: bg => ({ background: bg || "#4f46e5", color: "white", border: "none", borderRadius: 6, padding: "9px 18px", fontSize: 13, fontWeight: 500, cursor: "pointer" }),
+  btnGhost: { background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb", borderRadius: 5, padding: "3px 8px", fontSize: 11, cursor: "pointer" },
+  stat: { background: "#f9fafb", border: "1px solid #f3f4f6", borderRadius: 8, padding: "12px 14px", flex: 1 },
+  statNum: { fontSize: 22, fontWeight: 600, color: "#111827", lineHeight: 1 },
+  statLabel: { fontSize: 11, color: "#9ca3af", marginTop: 4 },
+};
+
+// ----- Storage layer (TEMPORARY: localStorage) ----------------------------
+
+const loadProjects = () => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.projects);
+    if (!raw) return [NONBILLABLE_DEFAULT];
+    const arr = JSON.parse(raw);
+    if (!arr.some(p => p.id === NONBILLABLE_ID)) arr.unshift(NONBILLABLE_DEFAULT);
+    return arr;
+  } catch { return [NONBILLABLE_DEFAULT]; }
+};
+const loadEntries = () => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.entries) || "[]");
+    // Backfill startMinutes for legacy entries (per-day stack starting at 9 AM)
+    const dayCursor = {};
+    return raw.map(e => {
+      if (typeof e.startMinutes === "number") return e;
+      const cur = dayCursor[e.date] ?? 9 * 60;
+      const start = cur;
+      dayCursor[e.date] = cur + hoursToMin(e.hours || 0);
+      return { ...e, startMinutes: start };
+    });
+  } catch { return []; }
+};
+const saveProjects = ps => localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(ps));
+const saveEntries = es => localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(es));
+
+// ----- ProjectPicker -------------------------------------------------------
+
+function ProjectPicker({ projects, value, onChange, placeholder = "— select project —", autoFocus }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  const selected = projects.find(p => p.id === value);
+  const billableProjects = projects.filter(p => p.billable !== false);
+  const nonBillableProjects = projects.filter(p => p.billable === false);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button type="button" autoFocus={autoFocus} onClick={() => setOpen(o => !o)}
+        style={{ ...s.input, textAlign: "left", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", height: 36 }}>
+        {selected ? (
+          <>
+            <span style={{
+              width: 10, height: 10, borderRadius: "50%", background: selected.color, flexShrink: 0,
+              border: selected.billable === false ? "1px dashed #6b7280" : "none"
+            }} />
+            <span style={{ flex: 1, color: "#111827" }}>{selected.name}</span>
+            {selected.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{selected.code}</span>}
+            {selected.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
+          </>
+        ) : (
+          <span style={{ flex: 1, color: "#9ca3af" }}>{placeholder}</span>
+        )}
+        <span style={{ color: "#9ca3af", fontSize: 10 }}>▼</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white",
+          border: "1px solid #e5e7eb", borderRadius: 6, boxShadow: "0 4px 16px rgba(15,23,42,0.08)",
+          maxHeight: 280, overflowY: "auto", zIndex: 50
+        }}>
+          {billableProjects.length === 0 && nonBillableProjects.length === 0 && (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "#9ca3af" }}>No projects yet — add one in the Projects tab.</div>
+          )}
+          {billableProjects.map(p => (
+            <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
+          ))}
+          {nonBillableProjects.length > 0 && billableProjects.length > 0 && (
+            <div style={{ borderTop: "1px solid #f3f4f6", margin: "4px 0" }} />
+          )}
+          {nonBillableProjects.map(p => (
+            <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectOption({ project, onSelect }) {
+  return (
+    <div className="tk-picker-option" onClick={onSelect}
+      style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+      <span style={{
+        width: 12, height: 12, borderRadius: "50%", background: project.color, flexShrink: 0,
+        border: project.billable === false ? "1px dashed #6b7280" : "none"
+      }} />
+      <span style={{ flex: 1, color: "#111827" }}>{project.name}</span>
+      {project.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{project.code}</span>}
+      {project.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
+    </div>
+  );
+}
+
+// ----- DayTimeline ---------------------------------------------------------
+// Vertical 7am–7pm timeline, daytimer-style. Click the start hour, drag down for duration.
+// Existing entries render as colored blocks at their start time. The pending block (during
+// drag AND while the entry-creation modal is open) stays visible until confirm/cancel.
+
+function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDelete }) {
+  const ref = useRef(null);
+  const [drag, setDrag] = useState(null); // { startMin, currentMin }
+
+  // Visible range — default 7am–7pm, optionally extended either side to midnight.
+  // Persisted to localStorage so the user's preferred window survives reload.
+  const [range, setRange] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || "{}"); }
+    catch { return {}; }
+  });
+  useEffect(() => {
+    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(range));
+  }, [range]);
+  const effStart = range.extendedStart ? 0 : DEFAULT_START_HOUR;
+  const effEnd = range.extendedEnd ? 24 : DEFAULT_END_HOUR;
+  const totalPx = (effEnd - effStart) * HOUR_PX;
+  const hourCount = effEnd - effStart;
+
+  const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
+
+  const yToMin = useCallback(y => {
+    if (!ref.current) return effStart * 60;
+    const rect = ref.current.getBoundingClientRect();
+    const relY = Math.max(0, Math.min(totalPx, y - rect.top));
+    return effStart * 60 + (relY / HOUR_PX) * 60;
+  }, [effStart, totalPx]);
+
+  useEffect(() => {
+    if (!drag) return;
+    const onMove = e => {
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      const m = snapMin(yToMin(y));
+      setDrag(d => ({ ...d, currentMin: Math.max(d.startMin + MIN_SNAP, Math.min(effEnd * 60, m)) }));
+    };
+    const onUp = () => {
+      setDrag(d => {
+        if (d) {
+          const dur = d.currentMin - d.startMin;
+          if (dur >= MIN_SNAP) onDragComplete({ startMin: d.startMin, durationMin: dur });
+        }
+        return null;
+      });
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("touchmove", onMove);
+    window.addEventListener("touchend", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onUp);
+    };
+  }, [drag, yToMin, onDragComplete, effEnd]);
+
+  const onDown = e => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const y = e.touches ? e.touches[0].clientY : e.clientY;
+    const m = snapMin(yToMin(y));
+    setDrag({ startMin: m, currentMin: m + MIN_SNAP });
+    e.preventDefault();
+  };
+
+  // Live drag wins over pending (which is the post-mouseup placeholder while modal is open).
+  const ghost = drag
+    ? { startMin: drag.startMin, durationMin: drag.currentMin - drag.startMin, source: "drag" }
+    : pending
+      ? { startMin: pending.startMin, durationMin: pending.durationMin, source: "pending" }
+      : null;
+
+  const totalLogged = dayEntries.reduce((sum, e) => sum + e.hours, 0);
+
+  // Reusable styles for the extension toggles (top + bottom).
+  const toggleBtn = {
+    background: "transparent", color: "#6b7280", border: "1px dashed #d1d5db",
+    borderRadius: 5, padding: "3px 12px", fontSize: 11, cursor: "pointer",
+    fontFamily: "system-ui, -apple-system, sans-serif"
+  };
+
+  return (
+    <div style={{ ...s.card, padding: "14px 14px 14px 8px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, paddingLeft: 56 }}>
+        <div style={{ fontSize: 11, fontWeight: 500, color: "#6b7280", letterSpacing: "0.06em" }}>DAY TIMELINE</div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          <span style={{ fontFamily: "monospace", color: "#111827", fontWeight: 600 }}>{totalLogged.toFixed(2)}h</span>
+          {" / "}
+          <span style={{ fontFamily: "monospace" }}>{TARGET_HOURS}h target</span>
+          {ghost && ghost.durationMin > 0 && (
+            <span style={{ marginLeft: 12, color: "#4f46e5" }}>
+              + <span style={{ fontFamily: "monospace", fontWeight: 600 }}>{(ghost.durationMin / 60).toFixed(2)}h</span>
+              {" "}
+              {ghost.source === "drag" ? "dragging" : "pending"}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Top toggle — extend before 7am to midnight */}
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 6, paddingLeft: 56 }}>
+        <button onClick={() => setRange(r => ({ ...r, extendedStart: !r.extendedStart }))} style={toggleBtn}>
+          {range.extendedStart ? "↓ Collapse to 7 AM" : "↑ Extend to midnight"}
+        </button>
+      </div>
+
+      {/* Timeline body: hour labels (left) + interactive area (right) */}
+      <div style={{ display: "flex", alignItems: "stretch" }}>
+        {/* Hour labels column */}
+        <div style={{ width: 56, position: "relative", height: totalPx, flexShrink: 0 }}>
+          {Array.from({ length: hourCount + 1 }, (_, i) => {
+            const hour = effStart + i;
+            const top = i * HOUR_PX;
+            const displayHour = hour === 24 ? 12 : hour;
+            const ampm = displayHour === 0 || displayHour === 24 ? "AM" : displayHour >= 12 ? "PM" : "AM";
+            const h12 = displayHour === 0 ? 12 : ((displayHour + 11) % 12) + 1;
+            return (
+              <div key={hour} style={{
+                position: "absolute", top: top - 7, right: 8,
+                fontSize: 10, color: "#9ca3af", fontFamily: "monospace", textAlign: "right"
+              }}>{h12}{ampm}</div>
+            );
+          })}
+        </div>
+
+        {/* Interactive timeline area */}
+        <div
+          ref={ref}
+          className={"tk-timeline" + (drag ? " tk-dragging" : "")}
+          onMouseDown={onDown}
+          onTouchStart={onDown}
+          style={{
+            flex: 1, position: "relative", height: totalPx,
+            background: "#fafafa", border: "1px solid #e5e7eb", borderRadius: 6, overflow: "hidden"
+          }}>
+          {/* Hour gridlines */}
+          {Array.from({ length: hourCount + 1 }, (_, i) => (
+            <div key={i} style={{
+              position: "absolute", left: 0, right: 0, top: i * HOUR_PX, height: 1,
+              background: i === 0 ? "transparent" : "#f3f4f6", pointerEvents: "none"
+            }} />
+          ))}
+          {/* Half-hour ticks */}
+          {Array.from({ length: hourCount }, (_, i) => (
+            <div key={`half-${i}`} style={{
+              position: "absolute", left: 0, width: 6, top: i * HOUR_PX + HOUR_PX / 2, height: 1,
+              background: "#f3f4f6", pointerEvents: "none"
+            }} />
+          ))}
+
+          {/* Existing entries */}
+          {dayEntries.map(entry => {
+            const proj = projMap[entry.projectId];
+            if (!proj) return null;
+            const top = ((entry.startMinutes - effStart * 60) / 60) * HOUR_PX;
+            const height = entry.hours * HOUR_PX;
+            const isNB = proj.billable === false;
+            const endMin = entry.startMinutes + hoursToMin(entry.hours);
+            // Tier the layout density to the block height.
+            const showTimeRow = height >= 32;   // 30 min and up
+            const showNote = height >= 48;       // 45 min and up
+            const tooltip = `${proj.name}${proj.code ? " (" + proj.code + ")" : ""}\n${minToDisplay(entry.startMinutes)} → ${minToDisplay(endMin)} · ${entry.hours.toFixed(2)}h${entry.note ? "\n\n" + entry.note : ""}${isNB ? "\n[non-billable]" : ""}`;
+            return (
+              <div key={entry.id} className="tk-entry-block" title={tooltip} style={{
+                position: "absolute", top, height, left: 4, right: 4,
+                background: proj.color + "22",
+                borderLeft: `3px ${isNB ? "dashed" : "solid"} ${proj.color}`,
+                borderRadius: "0 6px 6px 0",
+                padding: "1px 6px",
+                overflow: "hidden",
+                cursor: "default",
+              }} onMouseDown={e => e.stopPropagation()}>
+                {/* Top line: project name · time range · hours */}
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, lineHeight: 1.15 }}>
+                  <span style={{ fontWeight: 500, color: proj.color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 11, flex: "1 1 auto", minWidth: 0 }}>
+                    {proj.name}
+                  </span>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, color: "#9ca3af", flexShrink: 0, whiteSpace: "nowrap" }}>
+                    {minToShort(entry.startMinutes)}–{minToShort(endMin)}
+                  </span>
+                  <span style={{ fontFamily: "monospace", fontSize: 10, color: "#374151", flexShrink: 0, fontWeight: 600 }}>
+                    {entry.hours.toFixed(2)}h
+                  </span>
+                </div>
+                {/* Note (if there's room) */}
+                {showNote && entry.note && (
+                  <div style={{
+                    color: "#374151", marginTop: 2, lineHeight: 1.3, fontSize: 11,
+                    overflow: "hidden", display: "-webkit-box",
+                    WebkitLineClamp: Math.max(1, Math.floor((height - 24) / 14)),
+                    WebkitBoxOrient: "vertical"
+                  }}>
+                    {entry.note}
+                  </div>
+                )}
+                {/* Non-billable tag (only when there's room) */}
+                {showTimeRow && isNB && !entry.note && (
+                  <div style={{ fontSize: 9, color: "#94a3b8", fontFamily: "monospace", marginTop: 1 }}>non-billable</div>
+                )}
+                <button className="tk-delete-btn"
+                  onClick={() => onEntryDelete(entry.id)}
+                  onMouseDown={e => e.stopPropagation()}
+                  style={{
+                    position: "absolute", top: 2, right: 2,
+                    width: 16, height: 16, borderRadius: 3, border: "none",
+                    background: "rgba(255,255,255,0.85)", color: "#6b7280",
+                    fontSize: 10, cursor: "pointer", lineHeight: 1, padding: 0
+                  }}>✕</button>
+              </div>
+            );
+          })}
+
+          {/* Ghost block (drag preview or pending-during-modal) */}
+          {ghost && ghost.durationMin > 0 && (
+            <div style={{
+              position: "absolute",
+              top: ((ghost.startMin - effStart * 60) / 60) * HOUR_PX,
+              height: (ghost.durationMin / 60) * HOUR_PX,
+              left: 4, right: 4,
+              background: "repeating-linear-gradient(135deg, rgba(79,70,229,0.18), rgba(79,70,229,0.18) 6px, rgba(79,70,229,0.32) 6px, rgba(79,70,229,0.32) 12px)",
+              borderLeft: "3px solid #4f46e5",
+              borderRadius: "0 6px 6px 0",
+              pointerEvents: "none",
+              padding: "2px 6px",
+              fontSize: 11, color: "#3730a3",
+              boxShadow: ghost.source === "pending" ? "0 0 0 2px rgba(79,70,229,0.25)" : "none",
+            }}>
+              <div style={{ fontWeight: 600 }}>
+                {minToDisplay(ghost.startMin)} → {minToDisplay(ghost.startMin + ghost.durationMin)}
+              </div>
+              <div style={{ fontFamily: "monospace" }}>
+                {(ghost.durationMin / 60).toFixed(2)}h{ghost.source === "pending" ? " · awaiting details…" : ""}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom toggle — extend after 7pm to midnight */}
+      <div style={{ display: "flex", justifyContent: "center", marginTop: 6, paddingLeft: 56 }}>
+        <button onClick={() => setRange(r => ({ ...r, extendedEnd: !r.extendedEnd }))} style={toggleBtn}>
+          {range.extendedEnd ? "↑ Collapse to 7 PM" : "↓ Extend to midnight"}
+        </button>
+      </div>
+
+      <div style={{ marginTop: 8, fontSize: 11, color: "#9ca3af", textAlign: "center" }}>
+        {drag ? "Release to add this entry…" :
+         pending ? "Fill in the details in the dialog…" :
+         dayEntries.length === 0 ? "Click your start time and drag down to log an entry →" :
+         "Click and drag inside the timeline to log another entry →"}
+      </div>
+    </div>
+  );
+}
+
+// ----- EntryModal ----------------------------------------------------------
+
+function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
+  const [startTime, setStartTime] = useState(minToHHMM(initial.startMin));
+  const [hours, setHours] = useState((initial.durationMin / 60).toFixed(2));
+  const [projectId, setProjectId] = useState("");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const submit = () => {
+    const h = parseFloat(hours);
+    const startMin = hhmmToMin(startTime);
+    if (!projectId || isNaN(h) || h <= 0 || isNaN(startMin)) return;
+    onConfirm({ startMin, hours: h, projectId, note: note.trim() });
+  };
+
+  const canSubmit = !!projectId && !isNaN(parseFloat(hours)) && parseFloat(hours) > 0 && !!startTime;
+
+  return (
+    <div className="tk-backdrop" onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "white", borderRadius: 10, padding: "20px 22px", width: 460, maxWidth: "92vw",
+        boxShadow: "0 20px 60px rgba(15,23,42,0.25)"
+      }}>
+        <div style={{ fontSize: 11, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 4 }}>NEW ENTRY</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: "#111827", marginBottom: 16 }}>
+          {dispDateLong(date)}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <div>
+            <label style={s.label}>START TIME</label>
+            <input type="time" value={startTime} onChange={e => setStartTime(e.target.value)}
+              style={{ ...s.input, fontFamily: "monospace", fontSize: 14, fontWeight: 600 }} />
+          </div>
+          <div>
+            <label style={s.label}>DURATION (HOURS)</label>
+            <input type="number" step="0.25" min="0.25" max="24" value={hours}
+              onChange={e => setHours(e.target.value)}
+              style={{ ...s.input, fontFamily: "monospace", fontSize: 14, fontWeight: 600, textAlign: "right" }} />
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={s.label}>PROJECT</label>
+          <ProjectPicker projects={projects} value={projectId} onChange={setProjectId} autoFocus />
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <label style={s.label}>NOTE (brief — AI will polish at month-end)</label>
+          <input type="text" value={note} onChange={e => setNote(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && canSubmit && submit()}
+            placeholder="e.g. drafted wireframes, client review call, fixed auth bug"
+            style={s.input} />
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onCancel} style={{
+            background: "transparent", color: "#6b7280", border: "1px solid #e5e7eb",
+            borderRadius: 6, padding: "9px 16px", fontSize: 13, cursor: "pointer"
+          }}>Cancel</button>
+          <button onClick={submit} disabled={!canSubmit} style={{
+            ...s.btnPrimary(), opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed"
+          }}>Add entry</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----- Main App ------------------------------------------------------------
+
+function App() {
+  const [projects, setProjects] = useState(loadProjects);
+  const [entries, setEntries] = useState(loadEntries);
+  const [tab, setTab] = useState("log");
+
+  const [selectedDay, setSelectedDay] = useState(todayStr());
+  const [filterMonth, setFilterMonth] = useState(todayStr().slice(0, 7));
+
+  // pending = post-drag, pre-confirm placeholder. Drives both the modal AND the ghost block.
+  const [pending, setPending] = useState(null); // { startMin, durationMin } | null
+
+  const [showPF, setShowPF] = useState(false);
+  const [pName, setPName] = useState("");
+  const [pCode, setPCode] = useState("");
+  const [pColor, setPColor] = useState(PALETTE[0]);
+
+  const [xWeek, setXWeek] = useState(todayStr());
+  const [xMonth, setXMonth] = useState(todayStr().slice(0, 7));
+
+  useEffect(() => { saveProjects(projects); }, [projects]);
+  useEffect(() => { saveEntries(entries); }, [entries]);
+
+  const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
+
+  const dayEntries = useMemo(
+    () => entries
+      .filter(e => e.date === selectedDay)
+      .sort((a, b) => a.startMinutes - b.startMinutes),
+    [entries, selectedDay]
+  );
+
+  const handleDragComplete = useCallback(p => setPending(p), []);
+
+  const confirmEntry = ({ startMin, hours, projectId, note }) => {
+    setEntries(prev => [
+      { id: Date.now().toString(), date: selectedDay, projectId, hours,
+        startMinutes: startMin, note, aiNote: "" },
+      ...prev
+    ]);
+    setPending(null);
+  };
+
+  const cancelEntry = () => setPending(null);
+
+  const deleteEntry = id => setEntries(prev => prev.filter(e => e.id !== id));
+
+  const saveProject = () => {
+    if (!pName.trim()) return;
+    setProjects(p => [...p, {
+      id: Date.now().toString(), name: pName.trim(),
+      code: pCode.trim().toUpperCase(), color: pColor, billable: true
+    }]);
+    setPName(""); setPCode("");
+    setPColor(PALETTE[(projects.length + 1) % PALETTE.length]);
+    setShowPF(false);
+  };
+
+  const deleteProject = id => {
+    if (id === NONBILLABLE_ID) return;
+    setProjects(p => p.filter(x => x.id !== id));
+    setEntries(p => p.filter(e => e.projectId !== id));
+  };
+
+  const thisMonth = todayStr().slice(0, 7);
+  const mAll = entries.filter(e => e.date.startsWith(thisMonth));
+  const billableHours = mAll.filter(e => projMap[e.projectId]?.billable !== false).reduce((s, e) => s + e.hours, 0);
+  const nonBillableHours = mAll.filter(e => projMap[e.projectId]?.billable === false).reduce((s, e) => s + e.hours, 0);
+
+  const visibleEntries = entries.filter(e => e.date.startsWith(filterMonth));
+  const grouped = visibleEntries.reduce((acc, e) => { (acc[e.date] = acc[e.date] || []).push(e); return acc; }, {});
+  const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+  const availableMonths = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
+  if (!availableMonths.includes(thisMonth)) availableMonths.unshift(thisMonth);
+
+  // ---- Excel export — billable only ---------------------------------------
+  const exportExcel = () => {
+    const mon = getMonday(xWeek);
+    const dates = weekDatesFrom(mon);
+    const sun = dates[6];
+    const we = entries.filter(e => e.date >= mon && e.date <= sun
+      && projMap[e.projectId]?.billable !== false);
+    const used = projects.filter(p => p.billable !== false && we.some(e => e.projectId === p.id));
+    if (!used.length) { alert("No billable entries for that week."); return; }
+
+    const wb = XLSX.utils.book_new();
+    const hdr = ["Project", "Code", ...dates.map((d, i) => {
+      const dt = new Date(d + "T12:00:00");
+      return `${DAYS[i]} ${dt.getMonth() + 1}/${dt.getDate()}`;
+    }), "Total"];
+    const rows = used.map(proj => {
+      const cells = dates.map(d => {
+        const t = we.filter(e => e.projectId === proj.id && e.date === d).reduce((s, e) => s + e.hours, 0);
+        return t || "";
+      });
+      return [proj.name, proj.code || "", ...cells, +cells.reduce((s, v) => s + (v || 0), 0).toFixed(2)];
+    });
+    const totRow = ["TOTAL", "", ...dates.map(d => {
+      const t = we.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0);
+      return t || "";
+    }), +we.reduce((s, e) => s + e.hours, 0).toFixed(2)];
+
+    const ws = XLSX.utils.aoa_to_sheet([hdr, ...rows, totRow]);
+    ws["!cols"] = [{ wch: 32 }, { wch: 12 }, ...Array(8).fill({ wch: 10 })];
+    XLSX.utils.book_append_sheet(wb, ws, "Timesheet");
+    XLSX.writeFile(wb, `Timesheet_${mon}.xlsx`);
+  };
+
+  // ---- Word export — billable only ----------------------------------------
+  const exportWord = () => {
+    const [y, m] = xMonth.split("-");
+    const mStart = xMonth + "-01";
+    const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
+    const me = entries.filter(e => e.date >= mStart && e.date <= mEnd
+      && projMap[e.projectId]?.billable !== false);
+    if (!me.length) { alert("No billable entries for that month."); return; }
+    const used = projects.filter(p => p.billable !== false && me.some(e => e.projectId === p.id));
+    const monthLabel = new Date(mStart + "T12:00:00").toLocaleDateString("en-US", { month: "long", year: "numeric" });
+    const grand = me.reduce((s, e) => s + e.hours, 0);
+
+    const rows = used.map(proj => {
+      const pe = me.filter(e => e.projectId === proj.id)
+        .sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
+      const hrs = pe.reduce((s, e) => s + e.hours, 0);
+      const desc = pe.map(e => {
+        const n = e.aiNote || e.note;
+        return n ? `<b>${dispDate(e.date)}</b>: ${n}` : null;
+      }).filter(Boolean).join("<br>");
+      return `<tr>
+        <td style="border:1px solid #d1d5db;padding:8px 10px;vertical-align:top;font-weight:bold;width:22%">
+          ${proj.name}${proj.code ? `<br><span style="font-weight:normal;font-size:10px;color:#9ca3af">Code: ${proj.code}</span>` : ""}
+        </td>
+        <td style="border:1px solid #d1d5db;padding:8px 10px;vertical-align:top;width:63%;line-height:1.6">${desc || "(no notes)"}</td>
+        <td style="border:1px solid #d1d5db;padding:8px 10px;text-align:center;vertical-align:top;font-weight:bold;width:15%">${hrs.toFixed(1)}</td>
+      </tr>`;
+    }).join("");
+
+    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
+      <head><meta charset="utf-8"><style>
+        body{font-family:Calibri,sans-serif;font-size:11pt;margin:1in}
+        h1{font-size:16pt;color:#1e3a5f;margin-bottom:2pt}
+        p.sub{font-size:11pt;color:#6b7280;margin-top:0}
+        table{border-collapse:collapse;width:100%;margin-top:14pt}
+        th{background:#1e3a5f;color:white;padding:8px 10px;text-align:left;font-size:10pt}
+      </style></head>
+      <body>
+        <h1>Project work descriptions</h1>
+        <p class="sub">${monthLabel}</p>
+        <table>
+          <tr>
+            <th style="width:22%;border:1px solid #1e3a5f">Project</th>
+            <th style="width:63%;border:1px solid #1e3a5f">Work completed</th>
+            <th style="width:15%;border:1px solid #1e3a5f;text-align:center">Hours</th>
+          </tr>
+          ${rows}
+          <tr>
+            <td colspan="2" style="border:1px solid #d1d5db;padding:8px 10px;text-align:right;font-weight:bold">Total hours</td>
+            <td style="border:1px solid #d1d5db;padding:8px 10px;text-align:center;font-weight:bold">${grand.toFixed(1)}</td>
+          </tr>
+        </table>
+      </body></html>`;
+
+    const blob = new Blob([html], { type: "application/msword" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `Descriptions_${xMonth}.doc`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={s.root}>
+      <div style={s.nav}>
+        <div style={s.navInner}>
+          <div style={s.brand}>
+            <div style={s.brandName}>Timekeeper</div>
+            <div style={s.brandSub}>TIME &amp; BILLING</div>
+          </div>
+          {[["log", "Log time"], ["projects", "Projects"], ["export", "Export"]].map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)} style={s.tab(tab === id)}>{label}</button>
+          ))}
+          <div style={{ marginLeft: "auto", fontSize: 12, color: "#9ca3af" }}>
+            {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+          </div>
+        </div>
+      </div>
+
+      <div style={s.main}>
+
+        {tab === "log" && (
+          <div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <div style={s.stat}>
+                <div style={s.statNum}>{billableHours.toFixed(1)}h</div>
+                <div style={s.statLabel}>billable this month</div>
+              </div>
+              <div style={s.stat}>
+                <div style={s.statNum}>{nonBillableHours.toFixed(1)}h</div>
+                <div style={s.statLabel}>non-billable this month</div>
+              </div>
+              <div style={s.stat}>
+                <div style={s.statNum}>{new Set(mAll.filter(e => projMap[e.projectId]?.billable !== false).map(e => e.projectId)).size}</div>
+                <div style={s.statLabel}>active billable projects</div>
+              </div>
+              <div style={s.stat}>
+                <div style={s.statNum}>{mAll.length}</div>
+                <div style={s.statLabel}>entries logged</div>
+              </div>
+            </div>
+
+            {/* Day selector */}
+            <div style={{ ...s.card, marginBottom: 12, padding: "14px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+              <div>
+                <label style={s.label}>VIEWING DAY</label>
+                <input type="date" value={selectedDay} onChange={e => setSelectedDay(e.target.value)}
+                  style={{ ...s.input, width: "auto" }} />
+              </div>
+              <div style={{ fontSize: 13, color: "#6b7280", flex: 1 }}>
+                {dispDateLong(selectedDay)}
+              </div>
+              <button onClick={() => setSelectedDay(todayStr())} style={{
+                background: "transparent", color: "#6b7280", border: "1px solid #e5e7eb",
+                borderRadius: 5, padding: "5px 12px", fontSize: 12, cursor: "pointer"
+              }}>Today</button>
+            </div>
+
+            {/* Day timeline */}
+            <div style={{ marginBottom: 16 }}>
+              <DayTimeline
+                dayEntries={dayEntries}
+                projects={projects}
+                pending={pending}
+                onDragComplete={handleDragComplete}
+                onEntryDelete={deleteEntry}
+              />
+            </div>
+
+            {projects.filter(p => p.billable !== false).length === 0 && (
+              <div style={{
+                background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 7,
+                padding: "10px 14px", fontSize: 12, color: "#92400e", marginBottom: 12
+              }}>
+                Add at least one billable project under the Projects tab to start logging client work.
+              </div>
+            )}
+
+            {/* Month browse — flat scan of past entries */}
+            {entries.length > 0 && (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, marginTop: 24 }}>
+                  <label style={{ ...s.label, margin: 0, whiteSpace: "nowrap" }}>BROWSE MONTH</label>
+                  <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)}
+                    style={{ ...s.input, width: "auto", fontSize: 12 }}>
+                    {availableMonths.map(m => {
+                      const lbl = new Date(m + "-01T12:00:00").toLocaleDateString("en-US", { month: "long", year: "numeric" });
+                      return <option key={m} value={m}>{lbl}{m === thisMonth ? " (current)" : ""}</option>;
+                    })}
+                  </select>
+                  <span style={{ fontSize: 12, color: "#9ca3af", whiteSpace: "nowrap" }}>
+                    {visibleEntries.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · {visibleEntries.length} entries
+                  </span>
+                </div>
+
+                {visibleEntries.length === 0 ? (
+                  <div style={{ textAlign: "center", color: "#d1d5db", padding: "24px 0", fontSize: 13 }}>
+                    No entries for this month
+                  </div>
+                ) : (
+                  <div>
+                    {sortedDates.map(date => (
+                      <div key={date} style={{ marginBottom: 10 }}>
+                        <div style={{
+                          fontSize: 11, fontWeight: 500, color: date === selectedDay ? "#4f46e5" : "#9ca3af",
+                          padding: "4px 0 5px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer"
+                        }} onClick={() => setSelectedDay(date)}>
+                          <span>{dispDate(date)}{date === selectedDay ? " ← viewing" : ""}</span>
+                          <span style={{ color: "#d1d5db" }}>·</span>
+                          <span style={{ fontFamily: "monospace" }}>
+                            {grouped[date].reduce((s, e) => s + e.hours, 0).toFixed(1)}h
+                          </span>
+                        </div>
+                        {grouped[date]
+                          .slice()
+                          .sort((a, b) => a.startMinutes - b.startMinutes)
+                          .map(entry => {
+                            const proj = projMap[entry.projectId];
+                            const isNB = proj?.billable === false;
+                            return (
+                              <div key={entry.id} style={{
+                                background: "white", border: "1px solid #f3f4f6",
+                                borderLeft: `3px ${isNB ? "dashed" : "solid"} ${proj?.color || "#e5e7eb"}`,
+                                borderRadius: "0 7px 7px 0", padding: "9px 12px",
+                                display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 2
+                              }}>
+                                <div style={{
+                                  fontSize: 11, fontFamily: "monospace", color: "#9ca3af",
+                                  width: 116, flexShrink: 0, paddingTop: 2
+                                }}>
+                                  {minToDisplay(entry.startMinutes)}
+                                  <br />
+                                  <span style={{ fontSize: 10 }}>→ {minToDisplay(entry.startMinutes + hoursToMin(entry.hours))}</span>
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: entry.note ? 4 : 0 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 500, color: proj?.color || "#374151" }}>
+                                      {proj?.name || "Unknown project"}
+                                    </span>
+                                    {proj?.code && <span style={{
+                                      fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
+                                      padding: "1px 5px", borderRadius: 3, fontFamily: "monospace"
+                                    }}>{proj.code}</span>}
+                                    {isNB && <span style={{
+                                      fontSize: 10, color: "#6b7280", background: "#f1f5f9",
+                                      padding: "1px 6px", borderRadius: 3
+                                    }}>non-billable</span>}
+                                    <span style={{
+                                      fontSize: 13, fontWeight: 600, color: "#111827",
+                                      marginLeft: "auto", fontFamily: "monospace"
+                                    }}>{entry.hours.toFixed(2)}h</span>
+                                  </div>
+                                  {entry.note && (
+                                    <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>{entry.note}</div>
+                                  )}
+                                </div>
+                                <button onClick={() => deleteEntry(entry.id)} style={s.btnGhost}>✕</button>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {tab === "projects" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <span style={{ fontSize: 13, color: "#6b7280" }}>
+                {projects.length} project{projects.length !== 1 ? "s" : ""}
+                {" "}({projects.filter(p => p.billable !== false).length} billable)
+              </span>
+              <button onClick={() => setShowPF(v => !v)} style={{
+                ...s.btnPrimary(), padding: "8px 16px"
+              }}>{showPF ? "Cancel" : "+ Add project"}</button>
+            </div>
+
+            {showPF && (
+              <div style={{ ...s.card, marginBottom: 14, border: "1px solid #c7d2fe", background: "#fafafe" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 150px", gap: 12, marginBottom: 12 }}>
+                  <div>
+                    <label style={s.label}>PROJECT NAME</label>
+                    <input value={pName} onChange={e => setPName(e.target.value)}
+                      placeholder="e.g. Acme Corp — Website Redesign" style={s.input} />
+                  </div>
+                  <div>
+                    <label style={s.label}>BILLING CODE</label>
+                    <input value={pCode} onChange={e => setPCode(e.target.value)}
+                      placeholder="e.g. ACM-001" style={{ ...s.input, fontFamily: "monospace" }} />
+                  </div>
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={s.label}>COLOUR LABEL</label>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {PALETTE.map(c => (
+                      <div key={c} onClick={() => setPColor(c)} style={{
+                        width: 24, height: 24, borderRadius: "50%", background: c, cursor: "pointer",
+                        outline: pColor === c ? "2px solid #111827" : "2px solid transparent",
+                        outlineOffset: 2, flexShrink: 0
+                      }} />
+                    ))}
+                  </div>
+                </div>
+                <button onClick={saveProject} style={{ ...s.btnPrimary(), padding: "8px 20px" }}>Save project</button>
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {projects.map(proj => {
+                const pe = entries.filter(e => e.projectId === proj.id);
+                const hrs = pe.reduce((s, e) => s + e.hours, 0);
+                const isNB = proj.billable === false;
+                return (
+                  <div key={proj.id} style={{
+                    ...s.card, display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+                    background: isNB ? "#fafafa" : "white"
+                  }}>
+                    <div style={{
+                      width: 10, height: 10, borderRadius: "50%", background: proj.color, flexShrink: 0,
+                      border: isNB ? "1px dashed #6b7280" : "none"
+                    }} />
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: 14, fontWeight: 500, color: "#111827" }}>{proj.name}</span>
+                      {proj.code && <span style={{
+                        fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 8,
+                        background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
+                      }}>{proj.code}</span>}
+                      {isNB && <span style={{
+                        fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
+                        padding: "1px 6px", borderRadius: 3
+                      }}>non-billable · excluded from exports</span>}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "right", lineHeight: 1.6 }}>
+                      <div>{hrs.toFixed(1)}h total</div>
+                      <div>{pe.length} entries</div>
+                    </div>
+                    {!isNB && (
+                      <button onClick={() => deleteProject(proj.id)} style={s.btnGhost}>✕</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {tab === "export" && (
+          <div>
+            <div style={{
+              padding: "10px 14px", background: "#eef2ff", border: "1px solid #c7d2fe",
+              borderRadius: 7, fontSize: 12, color: "#3730a3", marginBottom: 14
+            }}>
+              Note: export formats below are placeholders. The office's real Excel and Word templates
+              will be wired in once provided. Non-billable time is excluded from both.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+
+              <div style={s.card}>
+                <div style={{ fontSize: 10, fontWeight: 500, color: "#16a34a", letterSpacing: "0.07em", marginBottom: 6 }}>WEEKLY TIMESHEET</div>
+                <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Excel export</div>
+                <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
+                  Pivot grid — projects × days, with totals. Billable only.
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={s.label}>ANY DATE IN TARGET WEEK</label>
+                  <input type="date" value={xWeek} onChange={e => setXWeek(e.target.value)} style={s.input} />
+                </div>
+                <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
+                  Week: <strong style={{ color: "#374151" }}>{getMonday(xWeek)}</strong>
+                  {" → "}
+                  <strong style={{ color: "#374151" }}>{weekDatesFrom(getMonday(xWeek))[6]}</strong>
+                </div>
+                <button onClick={exportExcel} style={{ ...s.btnPrimary("#16a34a"), width: "100%" }}>↓ Download .xlsx</button>
+              </div>
+
+              <div style={s.card}>
+                <div style={{ fontSize: 10, fontWeight: 500, color: "#d97706", letterSpacing: "0.07em", marginBottom: 6 }}>MONTHLY DESCRIPTIONS</div>
+                <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Word export</div>
+                <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
+                  One row per project — work descriptions and total hours. Billable only.
+                  AI polish step is planned to run here once per month before export.
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={s.label}>BILLING MONTH</label>
+                  <input type="month" value={xMonth} onChange={e => setXMonth(e.target.value)} style={s.input} />
+                </div>
+                <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
+                  {(() => {
+                    const me = entries.filter(e => e.date.startsWith(xMonth)
+                      && projMap[e.projectId]?.billable !== false);
+                    return `${me.length} billable entries · ${me.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · ${new Set(me.map(e => e.projectId)).size} projects`;
+                  })()}
+                </div>
+                <button onClick={exportWord} style={{ ...s.btnPrimary("#d97706"), width: "100%" }}>↓ Download .doc</button>
+              </div>
+
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {pending && (
+        <EntryModal
+          initial={pending}
+          projects={projects}
+          date={selectedDay}
+          onConfirm={confirmEntry}
+          onCancel={cancelEntry}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
