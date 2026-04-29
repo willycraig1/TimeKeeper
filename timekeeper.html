@@ -606,8 +606,23 @@ function App() {
   const [xWeek, setXWeek] = useState(todayStr());
   const [xMonth, setXMonth] = useState(todayStr().slice(0, 7));
 
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("tk_api_key") || "");
+  const [aiInstructions, setAiInstructions] = useState(
+    () => localStorage.getItem("tk_ai_instructions") || ""
+  );
+  const [aiRunning, setAiRunning] = useState(false);
+  const [aiStatus, setAiStatus] = useState(null); // null | { expanded, total } | { error }
+
   useEffect(() => { saveProjects(projects); }, [projects]);
   useEffect(() => { saveEntries(entries); }, [entries]);
+  useEffect(() => {
+    apiKey ? localStorage.setItem("tk_api_key", apiKey) : localStorage.removeItem("tk_api_key");
+  }, [apiKey]);
+  useEffect(() => {
+    aiInstructions
+      ? localStorage.setItem("tk_ai_instructions", aiInstructions)
+      : localStorage.removeItem("tk_ai_instructions");
+  }, [aiInstructions]);
 
   const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
 
@@ -661,6 +676,89 @@ function App() {
   const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
   const availableMonths = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
   if (!availableMonths.includes(thisMonth)) availableMonths.unshift(thisMonth);
+
+  // ---- AI note expansion ---------------------------------------------------
+  const runAiExpansion = async () => {
+    if (!apiKey.trim()) { alert("Enter your Anthropic API key first."); return; }
+    const [y, m] = xMonth.split("-");
+    const mStart = xMonth + "-01";
+    const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
+    const targets = entries.filter(e =>
+      e.date >= mStart && e.date <= mEnd &&
+      projMap[e.projectId]?.billable !== false && e.note
+    );
+    if (!targets.length) { alert("No billable entries with notes for that month."); return; }
+
+    setAiRunning(true);
+    setAiStatus(null);
+
+    const systemPrompt = [
+      "You are helping William Craig, an architect at Seibert Architects, P.A., expand brief daily time-entry notes into polished billable work descriptions for client invoices and project records.",
+      "",
+      "Context: Seibert Architects is an architecture firm. William performs Contract Administration (CA) and other architectural services. Common terms include: OAC (Owner-Architect-Contractor meeting), Pay App (Payment Application), ASI (Architect's Supplemental Instructions), RFI (Request for Information), submittal review, punch list, field observation, substantial completion.",
+      "",
+      "Guidelines:",
+      "- Use professional architectural language consistent with CA practice",
+      "- Be specific and factual — do not add information not implied by the original note",
+      "- Past tense, active voice. Do not begin sentences with \"I\"",
+      "- 1–3 sentences per entry, concise but complete",
+      "- Expand abbreviations where natural (e.g. \"OAC mtg\" → \"OAC Progress Meeting\")",
+      aiInstructions.trim() ? `\nAdditional instructions from William:\n${aiInstructions.trim()}` : "",
+      "",
+      'Return ONLY a JSON array: [{"id":"...","expanded":"..."}] — one object per input entry, same order as provided. No other text, no markdown fencing.',
+    ].join("\n");
+
+    const payload = targets.map(e => ({
+      id: e.id,
+      date: e.date,
+      project: projMap[e.projectId]?.name || "",
+      serviceCode: projMap[e.projectId]?.serviceCode || "",
+      taskCode: projMap[e.projectId]?.taskCode || "",
+      note: e.note,
+    }));
+
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey.trim(),
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-allow-browser": "true",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 8192,
+          system: systemPrompt,
+          messages: [{ role: "user", content: JSON.stringify(payload, null, 2) }],
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error?.message || `API error ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      const raw = data.content?.[0]?.text || "";
+      // Strip markdown code fences if the model adds them
+      const clean = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+      const results = JSON.parse(clean);
+
+      setEntries(prev => prev.map(e => {
+        const hit = results.find(r => r.id === e.id);
+        return hit && hit.expanded ? { ...e, aiNote: hit.expanded } : e;
+      }));
+      setAiStatus({ expanded: results.filter(r => r.expanded).length, total: targets.length });
+    } catch (err) {
+      const msg = err.message.includes("Failed to fetch")
+        ? "Network error — check that Edge/Chrome can reach api.anthropic.com (no firewall or proxy blocking it)."
+        : err.message;
+      setAiStatus({ error: msg });
+    } finally {
+      setAiRunning(false);
+    }
+  };
 
   // ---- Excel export — matches office "Time" sheet template ------------------
   const exportExcel = () => {
@@ -1106,13 +1204,93 @@ function App() {
 
         {tab === "export" && (
           <div>
-            <div style={{
-              padding: "10px 14px", background: "#eef2ff", border: "1px solid #c7d2fe",
-              borderRadius: 7, fontSize: 12, color: "#3730a3", marginBottom: 14
-            }}>
-              Export formats are being updated to match the office templates. Non-billable time is excluded from both.
-            </div>
 
+            {/* ── AI expansion ── */}
+            {(() => {
+              const [y, m] = xMonth.split("-");
+              const mStart = xMonth + "-01";
+              const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
+              const monthEntries = entries.filter(e =>
+                e.date >= mStart && e.date <= mEnd &&
+                projMap[e.projectId]?.billable !== false
+              );
+              const withNote = monthEntries.filter(e => e.note);
+              const withAi   = monthEntries.filter(e => e.aiNote);
+              const clearAiNotes = () => {
+                setEntries(prev => prev.map(e =>
+                  monthEntries.find(me => me.id === e.id) ? { ...e, aiNote: "" } : e
+                ));
+                setAiStatus(null);
+              };
+              return (
+                <div style={{ ...s.card, marginBottom: 14, border: "1px solid #c7d2fe", background: "#fafafe" }}>
+                  <div style={{ fontSize: 10, fontWeight: 500, color: "#4f46e5", letterSpacing: "0.07em", marginBottom: 6 }}>AI NOTE EXPANSION</div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Polish notes with Claude</div>
+                  <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 12 }}>
+                    Expands brief daily notes into billable-quality descriptions. Run once at month-end before the Word export — the Word doc will use expanded notes where available.
+                  </div>
+
+                  {/* Status line */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, fontSize: 12 }}>
+                    <span style={{ color: withAi.length === withNote.length && withNote.length > 0 ? "#16a34a" : "#6b7280" }}>
+                      {withNote.length === 0
+                        ? "No notes logged for this month yet."
+                        : withAi.length === 0
+                          ? `${withNote.length} entries with notes — none expanded yet.`
+                          : `${withAi.length} of ${withNote.length} entries expanded.`}
+                    </span>
+                    {withAi.length > 0 && (
+                      <button onClick={clearAiNotes} style={{ ...s.btnGhost, color: "#ef4444", borderColor: "#fecaca" }}>
+                        Clear expanded notes
+                      </button>
+                    )}
+                  </div>
+
+                  {/* API key */}
+                  <div style={{ marginBottom: 10 }}>
+                    <label style={s.label}>ANTHROPIC API KEY</label>
+                    <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+                      placeholder="sk-ant-api03-…"
+                      style={{ ...s.input, fontFamily: "monospace", fontSize: 12 }} />
+                    <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
+                      Stored in localStorage on this machine only. Never leaves your browser except to reach api.anthropic.com.
+                    </div>
+                  </div>
+
+                  {/* Custom instructions */}
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={s.label}>CUSTOM INSTRUCTIONS (optional — tailor the output language)</label>
+                    <textarea value={aiInstructions} onChange={e => setAiInstructions(e.target.value)}
+                      rows={3}
+                      placeholder={"e.g. Write in third person as \"the Architect\". Use \"Architect's Field Report\" instead of \"field report\". Match the tone of the example notes below:\n…"}
+                      style={{ ...s.input, fontFamily: "system-ui", resize: "vertical", lineHeight: 1.5 }} />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <button
+                      onClick={runAiExpansion}
+                      disabled={aiRunning || !apiKey.trim() || withNote.length === 0}
+                      style={{
+                        ...s.btnPrimary("#4f46e5"),
+                        opacity: (aiRunning || !apiKey.trim() || withNote.length === 0) ? 0.5 : 1,
+                        cursor: (aiRunning || !apiKey.trim() || withNote.length === 0) ? "not-allowed" : "pointer",
+                      }}>
+                      {aiRunning ? "Expanding…" : `Expand ${withNote.length} note${withNote.length !== 1 ? "s" : ""}`}
+                    </button>
+                    {aiStatus && !aiStatus.error && (
+                      <span style={{ fontSize: 12, color: "#16a34a" }}>
+                        Done — {aiStatus.expanded} of {aiStatus.total} expanded.
+                      </span>
+                    )}
+                    {aiStatus?.error && (
+                      <span style={{ fontSize: 12, color: "#ef4444", flex: 1 }}>{aiStatus.error}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ── Excel + Word ── */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
 
               <div style={s.card}>
@@ -1137,7 +1315,7 @@ function App() {
                 <div style={{ fontSize: 10, fontWeight: 500, color: "#d97706", letterSpacing: "0.07em", marginBottom: 6 }}>MONTHLY DESCRIPTIONS</div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Word export</div>
                 <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
-                  One section per project — JOB DESCRIPTION/TIMESHEET header with weeks delineated. AI polish step planned for here at month-end.
+                  One section per project — JOB DESCRIPTION/TIMESHEET header with weeks delineated. Uses AI-expanded notes where available.
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <label style={s.label}>BILLING MONTH</label>
@@ -1147,7 +1325,8 @@ function App() {
                   {(() => {
                     const me = entries.filter(e => e.date.startsWith(xMonth)
                       && projMap[e.projectId]?.billable !== false);
-                    return `${me.length} billable entries · ${me.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · ${new Set(me.map(e => e.projectId)).size} projects`;
+                    const aiCount = me.filter(e => e.aiNote).length;
+                    return `${me.length} billable entries · ${me.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · ${new Set(me.map(e => e.projectId)).size} projects${aiCount ? ` · ${aiCount} AI-expanded` : ""}`;
                   })()}
                 </div>
                 <button onClick={exportWord} style={{ ...s.btnPrimary("#d97706"), width: "100%" }}>↓ Download .doc</button>
