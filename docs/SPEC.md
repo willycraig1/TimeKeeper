@@ -39,12 +39,16 @@ The intent is to keep this property — single-file, no build — through the pr
 ```jsonc
 {
   "id": "string",          // generated, or "_nonbillable" for the protected entry
-  "name": "string",
-  "code": "string",        // optional billing code
+  "name": "string",        // Project / Client Name column in the timesheet
+  "code": "string",        // Job # (e.g. "2311") — maps to the Job # column
+  "serviceCode": "string", // Services code (e.g. "2.6") — maps to Services column
+  "taskCode": "string",    // Task code (e.g. "CA", "SD") — maps to Tasks column
   "color": "string",       // hex from PALETTE
   "billable": true         // false on the non-billable project (lunch, errands, admin)
 }
 ```
+
+`serviceCode` and `taskCode` were added in v2 of the project schema. Legacy records without these fields render fine — the fields are optional in all display contexts and export as empty strings.
 
 A non-billable project is pre-seeded on first run and cannot be deleted from the Projects tab. Its `billable: false` flag is the single source of truth for export filtering.
 
@@ -152,7 +156,7 @@ The Log tab has no AI affordance regardless of which strategy wins; AI lives onl
 
 ## Open questions / pending input
 
-1. **Office Excel and Word format templates.** William will provide the actual office templates. The current exports are placeholders. Format may pull on the data model — hold off on the File System Access wiring until templates are in.
+1. **Office Excel and Word format templates.** ~~Pending.~~ Templates received (April 2026). Excel: `EXAMPLE_TIME SHEET April 26.xls`; Word: `EXAMPLE_2311 - Job Description - Seaplace.doc`. Data model updated. Export rewrites are next.
 2. **AI flow choice.** Manual paste vs. local helper vs. skip — decide after seeing the format the AI must hit.
 3. **Entry overlap behavior.** Currently allowed; overlapping blocks render stacked. Decision pending: enforce no-overlap, lay overlapping entries side-by-side in lanes, or leave as-is.
 4. **Entry editing.** Current actions on an existing entry are limited to delete. In-place editing of start time, duration, project, or note is not yet implemented.

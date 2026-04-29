@@ -193,6 +193,11 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
             }} />
             <span style={{ flex: 1, color: "#111827" }}>{selected.name}</span>
             {selected.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{selected.code}</span>}
+            {(selected.serviceCode || selected.taskCode) && (
+              <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>
+                {[selected.serviceCode, selected.taskCode].filter(Boolean).join("/")}
+              </span>
+            )}
             {selected.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
           </>
         ) : (
@@ -234,6 +239,11 @@ function ProjectOption({ project, onSelect }) {
       }} />
       <span style={{ flex: 1, color: "#111827" }}>{project.name}</span>
       {project.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{project.code}</span>}
+      {(project.serviceCode || project.taskCode) && (
+        <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>
+          {[project.serviceCode, project.taskCode].filter(Boolean).join("/")}
+        </span>
+      )}
       {project.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
     </div>
   );
@@ -403,7 +413,8 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
             // Tier the layout density to the block height.
             const showTimeRow = height >= 32;   // 30 min and up
             const showNote = height >= 48;       // 45 min and up
-            const tooltip = `${proj.name}${proj.code ? " (" + proj.code + ")" : ""}\n${minToDisplay(entry.startMinutes)} → ${minToDisplay(endMin)} · ${entry.hours.toFixed(2)}h${entry.note ? "\n\n" + entry.note : ""}${isNB ? "\n[non-billable]" : ""}`;
+            const codes = [proj.code, proj.serviceCode, proj.taskCode].filter(Boolean).join(" · ");
+            const tooltip = `${proj.name}${codes ? " — " + codes : ""}\n${minToDisplay(entry.startMinutes)} → ${minToDisplay(endMin)} · ${entry.hours.toFixed(2)}h${entry.note ? "\n\n" + entry.note : ""}${isNB ? "\n[non-billable]" : ""}`;
             return (
               <div key={entry.id} className="tk-entry-block" title={tooltip} style={{
                 position: "absolute", top, height, left: 4, right: 4,
@@ -588,6 +599,8 @@ function App() {
   const [showPF, setShowPF] = useState(false);
   const [pName, setPName] = useState("");
   const [pCode, setPCode] = useState("");
+  const [pService, setPService] = useState("");
+  const [pTask, setPTask] = useState("");
   const [pColor, setPColor] = useState(PALETTE[0]);
 
   const [xWeek, setXWeek] = useState(todayStr());
@@ -624,9 +637,10 @@ function App() {
     if (!pName.trim()) return;
     setProjects(p => [...p, {
       id: Date.now().toString(), name: pName.trim(),
-      code: pCode.trim().toUpperCase(), color: pColor, billable: true
+      code: pCode.trim(), serviceCode: pService.trim(), taskCode: pTask.trim().toUpperCase(),
+      color: pColor, billable: true
     }]);
-    setPName(""); setPCode("");
+    setPName(""); setPCode(""); setPService(""); setPTask("");
     setPColor(PALETTE[(projects.length + 1) % PALETTE.length]);
     setShowPF(false);
   };
@@ -883,6 +897,14 @@ function App() {
                                       fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
                                       padding: "1px 5px", borderRadius: 3, fontFamily: "monospace"
                                     }}>{proj.code}</span>}
+                                    {proj?.serviceCode && <span style={{
+                                      fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
+                                      padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", marginLeft: 2
+                                    }}>{proj.serviceCode}</span>}
+                                    {proj?.taskCode && <span style={{
+                                      fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
+                                      padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", marginLeft: 2
+                                    }}>{proj.taskCode}</span>}
                                     {isNB && <span style={{
                                       fontSize: 10, color: "#6b7280", background: "#f1f5f9",
                                       padding: "1px 6px", borderRadius: 3
@@ -923,16 +945,26 @@ function App() {
 
             {showPF && (
               <div style={{ ...s.card, marginBottom: 14, border: "1px solid #c7d2fe", background: "#fafafe" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 150px", gap: 12, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 80px", gap: 12, marginBottom: 12 }}>
                   <div>
                     <label style={s.label}>PROJECT NAME</label>
                     <input value={pName} onChange={e => setPName(e.target.value)}
-                      placeholder="e.g. Acme Corp — Website Redesign" style={s.input} />
+                      placeholder="e.g. SeaPlace Door and Louver Project" style={s.input} />
                   </div>
                   <div>
-                    <label style={s.label}>BILLING CODE</label>
+                    <label style={s.label}>JOB #</label>
                     <input value={pCode} onChange={e => setPCode(e.target.value)}
-                      placeholder="e.g. ACM-001" style={{ ...s.input, fontFamily: "monospace" }} />
+                      placeholder="e.g. 2311" style={{ ...s.input, fontFamily: "monospace" }} />
+                  </div>
+                  <div>
+                    <label style={s.label}>SERVICE</label>
+                    <input value={pService} onChange={e => setPService(e.target.value)}
+                      placeholder="e.g. 2.6" style={{ ...s.input, fontFamily: "monospace" }} />
+                  </div>
+                  <div>
+                    <label style={s.label}>TASK</label>
+                    <input value={pTask} onChange={e => setPTask(e.target.value)}
+                      placeholder="e.g. CA" style={{ ...s.input, fontFamily: "monospace" }} />
                   </div>
                 </div>
                 <div style={{ marginBottom: 14 }}>
@@ -971,6 +1003,14 @@ function App() {
                         fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 8,
                         background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
                       }}>{proj.code}</span>}
+                      {proj.serviceCode && <span style={{
+                        fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 4,
+                        background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
+                      }}>{proj.serviceCode}</span>}
+                      {proj.taskCode && <span style={{
+                        fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 4,
+                        background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
+                      }}>{proj.taskCode}</span>}
                       {isNB && <span style={{
                         fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
                         padding: "1px 6px", borderRadius: 3
@@ -996,8 +1036,7 @@ function App() {
               padding: "10px 14px", background: "#eef2ff", border: "1px solid #c7d2fe",
               borderRadius: 7, fontSize: 12, color: "#3730a3", marginBottom: 14
             }}>
-              Note: export formats below are placeholders. The office's real Excel and Word templates
-              will be wired in once provided. Non-billable time is excluded from both.
+              Export formats are being updated to match the office templates. Non-billable time is excluded from both.
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>

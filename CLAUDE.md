@@ -14,6 +14,12 @@ If you're an AI session picking this up, read these in order before making chang
 - **Storage is currently `localStorage`** under keys prefixed `tk_`. The production target is the File System Access API plus a hash-chained append-only audit log. That wiring is pending — see Open Questions in `SPEC.md`.
 - **AI note expansion is end-of-month batch only.** Don't add per-entry AI buttons or "needs AI expand" affordances to the Log tab. AI belongs in the Export workflow.
 
-## Pending input
+## Export targets (templates received April 2026)
 
-William is providing the office's actual Excel and Word export templates. The current exports are placeholders. Format may pull on the data model — hold off on File System Access wiring until the templates are in.
+Office templates are in the repo root:
+- `EXAMPLE_TIME SHEET April 26.xls` — weekly Excel timesheet
+- `EXAMPLE_2311 - Job Description - Seaplace.doc` — monthly per-project Word job description
+
+**Excel format:** Columns are `Project / Client Name | Job # | Services | Tasks | Mon–Sun | TOTAL | Billable hours *`. The project `code` field = Job #, `serviceCode` = Services, `taskCode` = Tasks. Footer rows: Continuing Education, AIA Awards, Marketing, Overhead, TOTAL HOURS WORKED, Mileage/Tolls/Reimbursables, TOTAL HOURS TO BE PAID, NAME, WEEK ENDING.
+
+**Word format:** One document **per project** (not combined). Header: JOB NAME, JOB #, BILLING PERIOD, SERVICE CODE #, CODE. Body: two-column table of `week ending | Descriptions`, grouped by the Friday week-ending date within the billing month.
