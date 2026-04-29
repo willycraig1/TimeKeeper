@@ -662,37 +662,74 @@ function App() {
   const availableMonths = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
   if (!availableMonths.includes(thisMonth)) availableMonths.unshift(thisMonth);
 
-  // ---- Excel export — billable only ---------------------------------------
+  // ---- Excel export — matches office "Time" sheet template ------------------
   const exportExcel = () => {
     const mon = getMonday(xWeek);
     const dates = weekDatesFrom(mon);
     const sun = dates[6];
-    const we = entries.filter(e => e.date >= mon && e.date <= sun
-      && projMap[e.projectId]?.billable !== false);
-    const used = projects.filter(p => p.billable !== false && we.some(e => e.projectId === p.id));
-    if (!used.length) { alert("No billable entries for that week."); return; }
+
+    const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
+    const billWk = allWk.filter(e => projMap[e.projectId]?.billable !== false);
+    const billProjects = projects.filter(p => p.billable !== false && billWk.some(e => e.projectId === p.id));
+    if (!billProjects.length) { alert("No billable entries for that week."); return; }
+
+    const projDayHrs = (projId, date) =>
+      allWk.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
+    const projTotal = projId =>
+      +dates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
+
+    const dayTotals = dates.map(d => allWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
+    const totalAll  = +allWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+    const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+
+    const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
+      { month: "long", day: "numeric", year: "numeric" });
+
+    // blank(n) — n empty strings, used to pad rows to full width
+    const E = ""; const blank = n => Array(n).fill(E);
+
+    const aoa = [
+      // Firm header
+      ["SEIBERT ARCHITECTS, P.A.", ...blank(9), "WEEKLY TIME SHEET", E, E],
+      ["CONTRACTED SERVICES / CHANGE IN SERVICE     SERVICES: 2.1  -  2.3 -  2.4 (Tasks: SD,DD,CD)   2.5 -   2.6 - 2.8", ...blank(12)],
+      ["OH - Overhead", ...blank(12)],
+      [...blank(13)],
+      // Column headers
+      ["Project / Client Name", "Job #", "Services", "Tasks", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "TOTAL", "Billable hours *"],
+      // Billable project rows
+      ...billProjects.map(proj => {
+        const dh = dates.map(d => projDayHrs(proj.id, d) || E);
+        const tot = projTotal(proj.id);
+        return [proj.name, proj.code || E, proj.serviceCode || E, proj.taskCode || E, ...dh, tot, tot];
+      }),
+      // One spare blank project row (template convention)
+      [E, E, E, E, ...blank(7), 0, 0],
+      // Non-billable section — fixed rows matching template; hours left blank for manual entry
+      ["Continuing Education", E, E, E, ...blank(7), 0, E],
+      ["AIA Awards",           E, E, E, ...blank(7), 0, E],
+      ["Marketing",            E, E, E, ...blank(7), 0, E],
+      ["Overhead",             E, E, E, ...blank(7), 0, E],
+      // Totals
+      ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
+      // Footer left/right pairs
+      ["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)],
+      ["Tolls:",         E, E, "Vacation hours",            ...blank(9)],
+      ["Reimbursables:", E, E, "Sick time",                 ...blank(9)],
+      [E,                E, E, "Holiday",                   ...blank(9)],
+      ["TOTAL HOURS TO BE PAID", ...blank(10), totalAll, E],
+      [`NAME:   WILLIAM CRAIG`, ...blank(12)],
+      [`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"],
+    ];
 
     const wb = XLSX.utils.book_new();
-    const hdr = ["Project", "Code", ...dates.map((d, i) => {
-      const dt = new Date(d + "T12:00:00");
-      return `${DAYS[i]} ${dt.getMonth() + 1}/${dt.getDate()}`;
-    }), "Total"];
-    const rows = used.map(proj => {
-      const cells = dates.map(d => {
-        const t = we.filter(e => e.projectId === proj.id && e.date === d).reduce((s, e) => s + e.hours, 0);
-        return t || "";
-      });
-      return [proj.name, proj.code || "", ...cells, +cells.reduce((s, v) => s + (v || 0), 0).toFixed(2)];
-    });
-    const totRow = ["TOTAL", "", ...dates.map(d => {
-      const t = we.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0);
-      return t || "";
-    }), +we.reduce((s, e) => s + e.hours, 0).toFixed(2)];
-
-    const ws = XLSX.utils.aoa_to_sheet([hdr, ...rows, totRow]);
-    ws["!cols"] = [{ wch: 32 }, { wch: 12 }, ...Array(8).fill({ wch: 10 })];
-    XLSX.utils.book_append_sheet(wb, ws, "Timesheet");
-    XLSX.writeFile(wb, `Timesheet_${mon}.xlsx`);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws["!cols"] = [
+      { wch: 44 }, { wch: 8 }, { wch: 10 }, { wch: 8 },
+      { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 },
+      { wch: 8 }, { wch: 16 },
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, "Time");
+    XLSX.writeFile(wb, `TimeSheet_${sun}.xlsx`);
   };
 
   // ---- Word export — billable only ----------------------------------------
@@ -1045,7 +1082,7 @@ function App() {
                 <div style={{ fontSize: 10, fontWeight: 500, color: "#16a34a", letterSpacing: "0.07em", marginBottom: 6 }}>WEEKLY TIMESHEET</div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Excel export</div>
                 <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
-                  Pivot grid — projects × days, with totals. Billable only.
+                  Matches the firm template — Job #, Services, Tasks columns, daily hours, totals, and footer rows. Non-billable section rows left blank for manual entry.
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <label style={s.label}>ANY DATE IN TARGET WEEK</label>
