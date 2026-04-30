@@ -71,7 +71,8 @@ const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 // ----- Date / time helpers -------------------------------------------------
 
-const fmtDate = d => d.toISOString().split("T")[0];
+const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const offsetDay = (s, delta) => { const d = new Date(s + "T12:00:00"); d.setDate(d.getDate() + delta); return fmtDate(d); };
 const todayStr = () => fmtDate(new Date());
 const dispDate = s => new Date(s + "T12:00:00").toLocaleDateString("en-US",
   { weekday: "short", month: "short", day: "numeric" });
@@ -1034,8 +1035,18 @@ function App() {
             <div style={{ ...s.card, marginBottom: 12, padding: "14px 20px", display: "flex", alignItems: "center", gap: 16 }}>
               <div>
                 <label style={s.label}>VIEWING DAY</label>
-                <input type="date" value={selectedDay} onChange={e => setSelectedDay(e.target.value)}
-                  style={{ ...s.input, width: "auto" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <button onClick={() => setSelectedDay(d => offsetDay(d, -1))} style={{
+                    background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                    padding: "4px 9px", fontSize: 13, cursor: "pointer", color: "#374151", lineHeight: 1
+                  }}>◀</button>
+                  <input type="date" value={selectedDay} onChange={e => setSelectedDay(e.target.value)}
+                    style={{ ...s.input, width: "auto" }} />
+                  <button onClick={() => setSelectedDay(d => offsetDay(d, 1))} style={{
+                    background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                    padding: "4px 9px", fontSize: 13, cursor: "pointer", color: "#374151", lineHeight: 1
+                  }}>▶</button>
+                </div>
               </div>
               <div style={{ fontSize: 13, color: "#6b7280", flex: 1 }}>
                 {dispDateLong(selectedDay)}
