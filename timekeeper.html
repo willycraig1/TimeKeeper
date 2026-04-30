@@ -209,11 +209,6 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
             }} />
             <span style={{ flex: 1, color: "#111827" }}>{selected.name}</span>
             {selected.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{selected.code}</span>}
-            {(selected.serviceCode || selected.taskCode) && (
-              <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>
-                {[selected.serviceCode, selected.taskCode].filter(Boolean).join("/")}
-              </span>
-            )}
             {selected.billable === false && (
               <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>
                 {selected.overhead ? (OVERHEAD_BADGE[selected.id] || "OH") : "NB"}
@@ -269,11 +264,6 @@ function ProjectOption({ project, onSelect }) {
       }} />
       <span style={{ flex: 1, color: "#111827" }}>{project.name}</span>
       {project.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>{project.code}</span>}
-      {(project.serviceCode || project.taskCode) && (
-        <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace" }}>
-          {[project.serviceCode, project.taskCode].filter(Boolean).join("/")}
-        </span>
-      )}
       {project.billable === false && (
         <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>
           {project.overhead ? (OVERHEAD_BADGE[project.id] || "OH") : "NB"}
@@ -665,9 +655,12 @@ function App() {
   const [showPF, setShowPF] = useState(false);
   const [pName, setPName] = useState("");
   const [pCode, setPCode] = useState("");
-  const [pService, setPService] = useState("");
-  const [pTask, setPTask] = useState("");
   const [pColor, setPColor] = useState(PALETTE[0]);
+
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editPName, setEditPName] = useState("");
+  const [editPCode, setEditPCode] = useState("");
+  const [editPColor, setEditPColor] = useState(PALETTE[0]);
 
   const [xWeek, setXWeek] = useState(todayStr());
   const [xMonth, setXMonth] = useState(todayStr().slice(0, 7));
@@ -746,12 +739,25 @@ function App() {
     if (!pName.trim()) return;
     setProjects(p => [...p, {
       id: Date.now().toString(), name: pName.trim(),
-      code: pCode.trim(), serviceCode: pService.trim(), taskCode: pTask.trim().toUpperCase(),
-      color: pColor, billable: true
+      code: pCode.trim(), color: pColor, billable: true
     }]);
-    setPName(""); setPCode(""); setPService(""); setPTask("");
+    setPName(""); setPCode("");
     setPColor(PALETTE[(projects.length + 1) % PALETTE.length]);
     setShowPF(false);
+  };
+
+  const startEditProject = proj => {
+    setEditingProjectId(proj.id);
+    setEditPName(proj.name);
+    setEditPCode(proj.code || "");
+    setEditPColor(proj.color);
+  };
+  const saveEditProject = () => {
+    if (!editPName.trim()) return;
+    setProjects(p => p.map(x => x.id === editingProjectId
+      ? { ...x, name: editPName.trim(), code: editPCode.trim(), color: editPColor }
+      : x));
+    setEditingProjectId(null);
   };
 
   const deleteProject = id => {
@@ -1178,14 +1184,6 @@ function App() {
                                       fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
                                       padding: "1px 5px", borderRadius: 3, fontFamily: "monospace"
                                     }}>{proj.code}</span>}
-                                    {proj?.serviceCode && <span style={{
-                                      fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
-                                      padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", marginLeft: 2
-                                    }}>{proj.serviceCode}</span>}
-                                    {proj?.taskCode && <span style={{
-                                      fontSize: 10, color: "#9ca3af", background: "#f3f4f6",
-                                      padding: "1px 5px", borderRadius: 3, fontFamily: "monospace", marginLeft: 2
-                                    }}>{proj.taskCode}</span>}
                                     {isNB && <span style={{
                                       fontSize: 10, color: "#6b7280", background: "#f1f5f9",
                                       padding: "1px 6px", borderRadius: 3
@@ -1226,7 +1224,7 @@ function App() {
 
             {showPF && (
               <div style={{ ...s.card, marginBottom: 14, border: "1px solid #c7d2fe", background: "#fafafe" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 80px", gap: 12, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 110px", gap: 12, marginBottom: 12 }}>
                   <div>
                     <label style={s.label}>PROJECT NAME</label>
                     <input value={pName} onChange={e => setPName(e.target.value)}
@@ -1236,16 +1234,6 @@ function App() {
                     <label style={s.label}>JOB #</label>
                     <input value={pCode} onChange={e => setPCode(e.target.value)}
                       placeholder="e.g. 2311" style={{ ...s.input, fontFamily: "monospace" }} />
-                  </div>
-                  <div>
-                    <label style={s.label}>SERVICE</label>
-                    <input value={pService} onChange={e => setPService(e.target.value)}
-                      placeholder="e.g. 2.6" style={{ ...s.input, fontFamily: "monospace" }} />
-                  </div>
-                  <div>
-                    <label style={s.label}>TASK</label>
-                    <input value={pTask} onChange={e => setPTask(e.target.value)}
-                      placeholder="e.g. CA" style={{ ...s.input, fontFamily: "monospace" }} />
                   </div>
                 </div>
                 <div style={{ marginBottom: 14 }}>
@@ -1269,6 +1257,46 @@ function App() {
                 const pe = entries.filter(e => e.projectId === proj.id);
                 const hrs = pe.reduce((s, e) => s + e.hours, 0);
                 const isNB = proj.billable === false;
+
+                if (editingProjectId === proj.id) {
+                  return (
+                    <div key={proj.id} style={{ ...s.card, border: "1px solid #c7d2fe", background: "#fafafe", padding: "14px 16px" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: proj.billable !== false ? "1fr 110px" : "1fr", gap: 12, marginBottom: 12 }}>
+                        <div>
+                          <label style={s.label}>PROJECT NAME</label>
+                          <input value={editPName} onChange={e => setEditPName(e.target.value)} style={s.input} autoFocus />
+                        </div>
+                        {proj.billable !== false && (
+                          <div>
+                            <label style={s.label}>JOB #</label>
+                            <input value={editPCode} onChange={e => setEditPCode(e.target.value)}
+                              style={{ ...s.input, fontFamily: "monospace" }} />
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ marginBottom: 14 }}>
+                        <label style={s.label}>COLOUR LABEL</label>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                          {PALETTE.map(c => (
+                            <div key={c} onClick={() => setEditPColor(c)} style={{
+                              width: 24, height: 24, borderRadius: "50%", background: c, cursor: "pointer",
+                              outline: editPColor === c ? "2px solid #111827" : "2px solid transparent",
+                              outlineOffset: 2, flexShrink: 0
+                            }} />
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={saveEditProject} style={{ ...s.btnPrimary(), padding: "8px 20px" }}>Save</button>
+                        <button onClick={() => setEditingProjectId(null)} style={{
+                          background: "transparent", color: "#6b7280", border: "1px solid #e5e7eb",
+                          borderRadius: 6, padding: "8px 16px", fontSize: 13, cursor: "pointer"
+                        }}>Cancel</button>
+                      </div>
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={proj.id} style={{
                     ...s.card, display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
@@ -1284,14 +1312,6 @@ function App() {
                         fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 8,
                         background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
                       }}>{proj.code}</span>}
-                      {proj.serviceCode && <span style={{
-                        fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 4,
-                        background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
-                      }}>{proj.serviceCode}</span>}
-                      {proj.taskCode && <span style={{
-                        fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 4,
-                        background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
-                      }}>{proj.taskCode}</span>}
                       {proj.overhead && <span style={{
                         fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
                         padding: "1px 6px", borderRadius: 3
@@ -1305,6 +1325,7 @@ function App() {
                       <div>{fmtHrs(hrs)}h total</div>
                       <div>{pe.length} entries</div>
                     </div>
+                    <button onClick={() => startEditProject(proj)} style={s.btnGhost}>✎</button>
                     {proj.billable !== false && (
                       <button onClick={() => deleteProject(proj.id)} style={s.btnGhost}>✕</button>
                     )}
