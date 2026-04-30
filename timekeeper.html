@@ -109,6 +109,8 @@ const minToShort = m => {
 };
 const snapMin = m => Math.round(m / MIN_SNAP) * MIN_SNAP;
 const hoursToMin = h => Math.round(h * 60);
+// Display hours with up to 2 decimal places, stripping trailing zeros (0.25 → "0.25", 5.0 → "5")
+const fmtHrs = h => parseFloat(h.toFixed(2)).toString();
 
 // ----- Style tokens --------------------------------------------------------
 
@@ -402,19 +404,22 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
             ))
           ).flat()}
 
-          {/* Hover time indicator — shows snapped target time before drag starts */}
+          {/* Hover block — 15-min shaded region showing where drag will start */}
           {hoverMin !== null && !drag && !pending && (
             <>
               <div style={{
-                position: "absolute", left: 0, right: 0, height: 1,
+                position: "absolute", left: 0, right: 0,
                 top: ((hoverMin - effStart * 60) / 60) * HOUR_PX,
-                background: "rgba(79,70,229,0.3)", pointerEvents: "none",
+                height: HOUR_PX / 4,
+                background: "rgba(79,70,229,0.1)",
+                borderTop: "1px solid rgba(79,70,229,0.35)",
+                pointerEvents: "none",
               }} />
               <div style={{
-                position: "absolute", right: 4, pointerEvents: "none",
-                top: ((hoverMin - effStart * 60) / 60) * HOUR_PX - 12,
+                position: "absolute", left: 3, pointerEvents: "none",
+                top: ((hoverMin - effStart * 60) / 60) * HOUR_PX + 2,
                 fontSize: 9, fontFamily: "monospace", color: "#4f46e5",
-                background: "rgba(255,255,255,0.92)", padding: "1px 3px",
+                background: "rgba(255,255,255,0.85)", padding: "0 2px",
                 borderRadius: 2, lineHeight: "11px",
               }}>{minToDisplay(hoverMin)}</div>
             </>
@@ -1008,11 +1013,11 @@ function App() {
           <div>
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               <div style={s.stat}>
-                <div style={s.statNum}>{billableHours.toFixed(1)}h</div>
+                <div style={s.statNum}>{fmtHrs(billableHours)}h</div>
                 <div style={s.statLabel}>billable this month</div>
               </div>
               <div style={s.stat}>
-                <div style={s.statNum}>{nonBillableHours.toFixed(1)}h</div>
+                <div style={s.statNum}>{fmtHrs(nonBillableHours)}h</div>
                 <div style={s.statLabel}>non-billable this month</div>
               </div>
               <div style={s.stat}>
@@ -1077,7 +1082,7 @@ function App() {
                     })}
                   </select>
                   <span style={{ fontSize: 12, color: "#9ca3af", whiteSpace: "nowrap" }}>
-                    {visibleEntries.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · {visibleEntries.length} entries
+                    {fmtHrs(visibleEntries.reduce((s, e) => s + e.hours, 0))}h · {visibleEntries.length} entries
                   </span>
                 </div>
 
@@ -1096,7 +1101,7 @@ function App() {
                           <span>{dispDate(date)}{date === selectedDay ? " ← viewing" : ""}</span>
                           <span style={{ color: "#d1d5db" }}>·</span>
                           <span style={{ fontFamily: "monospace" }}>
-                            {grouped[date].reduce((s, e) => s + e.hours, 0).toFixed(1)}h
+                            {fmtHrs(grouped[date].reduce((s, e) => s + e.hours, 0))}h
                           </span>
                         </div>
                         {grouped[date]
@@ -1249,7 +1254,7 @@ function App() {
                       }}>non-billable · excluded from exports</span>}
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "right", lineHeight: 1.6 }}>
-                      <div>{hrs.toFixed(1)}h total</div>
+                      <div>{fmtHrs(hrs)}h total</div>
                       <div>{pe.length} entries</div>
                     </div>
                     {!isNB && (
@@ -1386,7 +1391,7 @@ function App() {
                     const me = entries.filter(e => e.date.startsWith(xMonth)
                       && projMap[e.projectId]?.billable !== false);
                     const aiCount = me.filter(e => e.aiNote).length;
-                    return `${me.length} billable entries · ${me.reduce((s, e) => s + e.hours, 0).toFixed(1)}h · ${new Set(me.map(e => e.projectId)).size} projects${aiCount ? ` · ${aiCount} AI-expanded` : ""}`;
+                    return `${me.length} billable entries · ${fmtHrs(me.reduce((s, e) => s + e.hours, 0))}h · ${new Set(me.map(e => e.projectId)).size} projects${aiCount ? ` · ${aiCount} AI-expanded` : ""}`;
                   })()}
                 </div>
                 <button onClick={exportWord} style={{ ...s.btnPrimary("#d97706"), width: "100%" }}>↓ Download .doc</button>
