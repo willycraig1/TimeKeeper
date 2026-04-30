@@ -254,19 +254,11 @@ function ProjectOption({ project, onSelect }) {
 // Existing entries render as colored blocks at their start time. The pending block (during
 // drag AND while the entry-creation modal is open) stays visible until confirm/cancel.
 
-function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDelete }) {
+function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDelete, onEntryEdit, range, setRange }) {
   const ref = useRef(null);
-  const [drag, setDrag] = useState(null); // { startMin, currentMin }
+  const [drag, setDrag] = useState(null);
+  const [hoverMin, setHoverMin] = useState(null);
 
-  // Visible range — default 7am–7pm, optionally extended either side to midnight.
-  // Persisted to localStorage so the user's preferred window survives reload.
-  const [range, setRange] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || "{}"); }
-    catch { return {}; }
-  });
-  useEffect(() => {
-    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(range));
-  }, [range]);
   const effStart = range.extendedStart ? 0 : DEFAULT_START_HOUR;
   const effEnd = range.extendedEnd ? 24 : DEFAULT_END_HOUR;
   const totalPx = (effEnd - effStart) * HOUR_PX;
@@ -314,6 +306,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
     const y = e.touches ? e.touches[0].clientY : e.clientY;
     const m = snapMin(yToMin(y));
     setDrag({ startMin: m, currentMin: m + MIN_SNAP });
+    setHoverMin(null);
     e.preventDefault();
   };
 
@@ -383,6 +376,8 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
           className={"tk-timeline" + (drag ? " tk-dragging" : "")}
           onMouseDown={onDown}
           onTouchStart={onDown}
+          onMouseMove={e => { if (!drag) setHoverMin(snapMin(yToMin(e.clientY))); }}
+          onMouseLeave={() => setHoverMin(null)}
           style={{
             flex: 1, position: "relative", height: totalPx,
             background: "#fafafa", border: "1px solid #e5e7eb", borderRadius: 6, overflow: "hidden"
@@ -394,13 +389,36 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
               background: i === 0 ? "transparent" : "#f3f4f6", pointerEvents: "none"
             }} />
           ))}
-          {/* Half-hour ticks */}
-          {Array.from({ length: hourCount }, (_, i) => (
-            <div key={`half-${i}`} style={{
-              position: "absolute", left: 0, width: 6, top: i * HOUR_PX + HOUR_PX / 2, height: 1,
-              background: "#f3f4f6", pointerEvents: "none"
-            }} />
-          ))}
+          {/* Quarter-hour ticks: at :15, :30, :45 per hour */}
+          {Array.from({ length: hourCount }, (_, i) =>
+            [1, 2, 3].map(q => (
+              <div key={`q-${i}-${q}`} style={{
+                position: "absolute", left: 0,
+                width: q === 2 ? 12 : 6,
+                top: i * HOUR_PX + q * (HOUR_PX / 4), height: 1,
+                background: q === 2 ? "#e5e7eb" : "#f0f0f0",
+                pointerEvents: "none"
+              }} />
+            ))
+          ).flat()}
+
+          {/* Hover time indicator — shows snapped target time before drag starts */}
+          {hoverMin !== null && !drag && !pending && (
+            <>
+              <div style={{
+                position: "absolute", left: 0, right: 0, height: 1,
+                top: ((hoverMin - effStart * 60) / 60) * HOUR_PX,
+                background: "rgba(79,70,229,0.3)", pointerEvents: "none",
+              }} />
+              <div style={{
+                position: "absolute", right: 4, pointerEvents: "none",
+                top: ((hoverMin - effStart * 60) / 60) * HOUR_PX - 12,
+                fontSize: 9, fontFamily: "monospace", color: "#4f46e5",
+                background: "rgba(255,255,255,0.92)", padding: "1px 3px",
+                borderRadius: 2, lineHeight: "11px",
+              }}>{minToDisplay(hoverMin)}</div>
+            </>
+          )}
 
           {/* Existing entries */}
           {dayEntries.map(entry => {
@@ -416,7 +434,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
             const codes = [proj.code, proj.serviceCode, proj.taskCode].filter(Boolean).join(" · ");
             const tooltip = `${proj.name}${codes ? " — " + codes : ""}\n${minToDisplay(entry.startMinutes)} → ${minToDisplay(endMin)} · ${entry.hours.toFixed(2)}h${entry.note ? "\n\n" + entry.note : ""}${isNB ? "\n[non-billable]" : ""}`;
             return (
-              <div key={entry.id} className="tk-entry-block" title={tooltip} style={{
+              <div key={entry.id} className="tk-entry-block" title={tooltip + "\n\nDouble-click to edit"} style={{
                 position: "absolute", top, height, left: 4, right: 4,
                 background: proj.color + "22",
                 borderLeft: `3px ${isNB ? "dashed" : "solid"} ${proj.color}`,
@@ -424,7 +442,8 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
                 padding: "1px 6px",
                 overflow: "hidden",
                 cursor: "default",
-              }} onMouseDown={e => e.stopPropagation()}>
+              }} onMouseDown={e => e.stopPropagation()}
+                 onDoubleClick={() => onEntryEdit(entry)}>
                 {/* Top line: project name · time range · hours */}
                 <div style={{ display: "flex", alignItems: "baseline", gap: 6, lineHeight: 1.15 }}>
                   <span style={{ fontWeight: 500, color: proj.color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 11, flex: "1 1 auto", minWidth: 0 }}>
@@ -452,7 +471,16 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
                 {showTimeRow && isNB && !entry.note && (
                   <div style={{ fontSize: 9, color: "#94a3b8", fontFamily: "monospace", marginTop: 1 }}>non-billable</div>
                 )}
-                <button className="tk-delete-btn"
+                <button className="tk-delete-btn" title="Edit"
+                  onClick={() => onEntryEdit(entry)}
+                  onMouseDown={e => e.stopPropagation()}
+                  style={{
+                    position: "absolute", top: 2, right: 20,
+                    width: 16, height: 16, borderRadius: 3, border: "none",
+                    background: "rgba(255,255,255,0.85)", color: "#4f46e5",
+                    fontSize: 11, cursor: "pointer", lineHeight: 1, padding: 0
+                  }}>✎</button>
+                <button className="tk-delete-btn" title="Delete"
                   onClick={() => onEntryDelete(entry.id)}
                   onMouseDown={e => e.stopPropagation()}
                   style={{
@@ -513,8 +541,9 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
 function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
   const [startTime, setStartTime] = useState(minToHHMM(initial.startMin));
   const [hours, setHours] = useState((initial.durationMin / 60).toFixed(2));
-  const [projectId, setProjectId] = useState("");
-  const [note, setNote] = useState("");
+  const [projectId, setProjectId] = useState(initial.projectId || "");
+  const [note, setNote] = useState(initial.note || "");
+  const isEdit = !!initial.entryId;
 
   useEffect(() => {
     const onKey = e => { if (e.key === "Escape") onCancel(); };
@@ -537,7 +566,7 @@ function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
         background: "white", borderRadius: 10, padding: "20px 22px", width: 460, maxWidth: "92vw",
         boxShadow: "0 20px 60px rgba(15,23,42,0.25)"
       }}>
-        <div style={{ fontSize: 11, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 4 }}>NEW ENTRY</div>
+        <div style={{ fontSize: 11, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 4 }}>{isEdit ? "EDIT ENTRY" : "NEW ENTRY"}</div>
         <div style={{ fontSize: 16, fontWeight: 600, color: "#111827", marginBottom: 16 }}>
           {dispDateLong(date)}
         </div>
@@ -558,7 +587,7 @@ function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
 
         <div style={{ marginBottom: 12 }}>
           <label style={s.label}>PROJECT</label>
-          <ProjectPicker projects={projects} value={projectId} onChange={setProjectId} autoFocus />
+          <ProjectPicker projects={projects} value={projectId} onChange={setProjectId} autoFocus={!isEdit} />
         </div>
 
         <div style={{ marginBottom: 18 }}>
@@ -576,7 +605,7 @@ function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
           }}>Cancel</button>
           <button onClick={submit} disabled={!canSubmit} style={{
             ...s.btnPrimary(), opacity: canSubmit ? 1 : 0.5, cursor: canSubmit ? "pointer" : "not-allowed"
-          }}>Add entry</button>
+          }}>{isEdit ? "Save changes" : "Add entry"}</button>
         </div>
       </div>
     </div>
@@ -606,6 +635,13 @@ function App() {
   const [xWeek, setXWeek] = useState(todayStr());
   const [xMonth, setXMonth] = useState(todayStr().slice(0, 7));
 
+  const [editing, setEditing] = useState(null); // entry being edited | null
+
+  const [timelineRange, setTimelineRange] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || "{}"); }
+    catch { return {}; }
+  });
+
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("tk_api_key") || "");
   const [aiInstructions, setAiInstructions] = useState(
     () => localStorage.getItem("tk_ai_instructions") || ""
@@ -615,6 +651,9 @@ function App() {
 
   useEffect(() => { saveProjects(projects); }, [projects]);
   useEffect(() => { saveEntries(entries); }, [entries]);
+  useEffect(() => {
+    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(timelineRange));
+  }, [timelineRange]);
   useEffect(() => {
     apiKey ? localStorage.setItem("tk_api_key", apiKey) : localStorage.removeItem("tk_api_key");
   }, [apiKey]);
@@ -635,6 +674,13 @@ function App() {
 
   const handleDragComplete = useCallback(p => setPending(p), []);
 
+  const autoExtendRange = (startMin, hours) => {
+    const effS = timelineRange.extendedStart ? 0 : DEFAULT_START_HOUR;
+    const effE = timelineRange.extendedEnd ? 24 : DEFAULT_END_HOUR;
+    if (startMin < effS * 60) setTimelineRange(r => ({ ...r, extendedStart: true }));
+    if (startMin + hoursToMin(hours) > effE * 60) setTimelineRange(r => ({ ...r, extendedEnd: true }));
+  };
+
   const confirmEntry = ({ startMin, hours, projectId, note }) => {
     setEntries(prev => [
       { id: Date.now().toString(), date: selectedDay, projectId, hours,
@@ -642,11 +688,22 @@ function App() {
       ...prev
     ]);
     setPending(null);
+    autoExtendRange(startMin, hours);
   };
 
   const cancelEntry = () => setPending(null);
 
   const deleteEntry = id => setEntries(prev => prev.filter(e => e.id !== id));
+
+  const openEdit = entry => setEditing(entry);
+  const cancelEdit = () => setEditing(null);
+  const updateEntry = ({ startMin, hours, projectId, note }) => {
+    setEntries(prev => prev.map(e => e.id === editing.id
+      ? { ...e, startMinutes: startMin, hours, projectId, note }
+      : e));
+    if (editing.date === selectedDay) autoExtendRange(startMin, hours);
+    setEditing(null);
+  };
 
   const saveProject = () => {
     if (!pName.trim()) return;
@@ -992,6 +1049,9 @@ function App() {
                 pending={pending}
                 onDragComplete={handleDragComplete}
                 onEntryDelete={deleteEntry}
+                onEntryEdit={openEdit}
+                range={timelineRange}
+                setRange={setTimelineRange}
               />
             </div>
 
@@ -1345,6 +1405,21 @@ function App() {
           date={selectedDay}
           onConfirm={confirmEntry}
           onCancel={cancelEntry}
+        />
+      )}
+      {editing && (
+        <EntryModal
+          initial={{
+            startMin: editing.startMinutes,
+            durationMin: hoursToMin(editing.hours),
+            projectId: editing.projectId,
+            note: editing.note,
+            entryId: editing.id,
+          }}
+          projects={projects}
+          date={editing.date}
+          onConfirm={updateEntry}
+          onCancel={cancelEdit}
         />
       )}
     </div>
