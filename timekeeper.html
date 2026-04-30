@@ -107,7 +107,7 @@ const minToShort = m => {
   const h12 = ((h + 11) % 12) + 1;
   return `${h12}:${String(mm).padStart(2, "0")}`;
 };
-const snapMin = m => Math.round(m / MIN_SNAP) * MIN_SNAP;
+const snapMin = m => Math.floor(m / MIN_SNAP) * MIN_SNAP;
 const hoursToMin = h => Math.round(h * 60);
 // Display hours with up to 2 decimal places, stripping trailing zeros (0.25 → "0.25", 5.0 → "5")
 const fmtHrs = h => parseFloat(h.toFixed(2)).toString();
