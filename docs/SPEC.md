@@ -38,19 +38,32 @@ The intent is to keep this property — single-file, no build — through the pr
 
 ```jsonc
 {
-  "id": "string",          // generated, or "_nonbillable" for the protected entry
+  "id": "string",          // generated, or a reserved ID for protected entries (see below)
   "name": "string",        // Project / Client Name column in the timesheet
   "code": "string",        // Job # (e.g. "2311") — maps to the Job # column
   "serviceCode": "string", // Services code (e.g. "2.6") — maps to Services column
   "taskCode": "string",    // Task code (e.g. "CA", "SD") — maps to Tasks column
   "color": "string",       // hex from PALETTE
-  "billable": true         // false on the non-billable project (lunch, errands, admin)
+  "billable": true,        // false on non-billable and overhead projects
+  "overhead": false        // true only on the 4 overhead entries (CE, AIA, Marketing, Office)
 }
 ```
 
-`serviceCode` and `taskCode` were added in v2 of the project schema. Legacy records without these fields render fine — the fields are optional in all display contexts and export as empty strings.
+`serviceCode` and `taskCode` were added in v2 of the project schema. `overhead` was added in v3. Legacy records without these fields render fine — the fields are optional in all display contexts.
 
-A non-billable project is pre-seeded on first run and cannot be deleted from the Projects tab. Its `billable: false` flag is the single source of truth for export filtering.
+#### Three-tier project model
+
+| Type | `billable` | `overhead` | Excel timesheet | Word descriptions |
+|------|-----------|-----------|-----------------|-------------------|
+| **Billable** | `true` | — | Billable rows | Included |
+| **Overhead** | `false` | `true` | Fixed overhead rows (CE, AIA, Marketing, Overhead) — auto-filled | Excluded |
+| **Offsheet** | `false` | — | Excluded | Excluded |
+
+**Protected IDs** (cannot be deleted):
+- `_nonbillable` — the single offsheet entry (lunch, errands, admin)
+- `_ce`, `_aia`, `_marketing`, `_office` — the four overhead entries
+
+All protected entries are pre-seeded on first run and backfilled if missing from stored data.
 
 ### Entry record
 

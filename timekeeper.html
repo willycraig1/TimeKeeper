@@ -51,10 +51,19 @@ const NONBILLABLE_ID = "_nonbillable";
 const NONBILLABLE_DEFAULT = {
   id: NONBILLABLE_ID,
   name: "Non-billable (lunch / errands / admin)",
-  code: "",
-  color: "#94a3b8",
-  billable: false,
+  code: "", color: "#94a3b8", billable: false,
 };
+
+const OVERHEAD_DEFAULTS = [
+  { id: "_ce",        name: "Continuing Education", code: "", color: "#8b5cf6", billable: false, overhead: true },
+  { id: "_aia",       name: "AIA Awards",           code: "", color: "#eab308", billable: false, overhead: true },
+  { id: "_marketing", name: "Marketing",             code: "", color: "#f97316", billable: false, overhead: true },
+  { id: "_office",    name: "Office",                code: "", color: "#64748b", billable: false, overhead: true },
+];
+// Short badge text shown in pickers and entry blocks for overhead projects
+const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OFF" };
+// Excel timesheet row labels match the firm's template (Office → "Overhead")
+const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _office: "Overhead" };
 
 const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3" };
 
@@ -144,11 +153,14 @@ const s = {
 const loadProjects = () => {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.projects);
-    if (!raw) return [NONBILLABLE_DEFAULT];
+    if (!raw) return [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT];
     const arr = JSON.parse(raw);
-    if (!arr.some(p => p.id === NONBILLABLE_ID)) arr.unshift(NONBILLABLE_DEFAULT);
+    if (!arr.some(p => p.id === NONBILLABLE_ID)) arr.push(NONBILLABLE_DEFAULT);
+    for (const def of OVERHEAD_DEFAULTS) {
+      if (!arr.some(p => p.id === def.id)) arr.push(def);
+    }
     return arr;
-  } catch { return [NONBILLABLE_DEFAULT]; }
+  } catch { return [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT]; }
 };
 const loadEntries = () => {
   try {
@@ -182,7 +194,8 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
 
   const selected = projects.find(p => p.id === value);
   const billableProjects = projects.filter(p => p.billable !== false);
-  const nonBillableProjects = projects.filter(p => p.billable === false);
+  const overheadProjects = projects.filter(p => p.overhead === true);
+  const offsheetProjects = projects.filter(p => p.billable === false && !p.overhead);
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -201,7 +214,11 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
                 {[selected.serviceCode, selected.taskCode].filter(Boolean).join("/")}
               </span>
             )}
-            {selected.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
+            {selected.billable === false && (
+              <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>
+                {selected.overhead ? (OVERHEAD_BADGE[selected.id] || "OH") : "NB"}
+              </span>
+            )}
           </>
         ) : (
           <span style={{ flex: 1, color: "#9ca3af" }}>{placeholder}</span>
@@ -214,18 +231,28 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
           border: "1px solid #e5e7eb", borderRadius: 6, boxShadow: "0 4px 16px rgba(15,23,42,0.08)",
           maxHeight: 280, overflowY: "auto", zIndex: 50
         }}>
-          {billableProjects.length === 0 && nonBillableProjects.length === 0 && (
-            <div style={{ padding: "10px 12px", fontSize: 12, color: "#9ca3af" }}>No projects yet — add one in the Projects tab.</div>
+          {billableProjects.length === 0 && (
+            <div style={{ padding: "10px 12px", fontSize: 12, color: "#9ca3af" }}>No billable projects yet — add one in the Projects tab.</div>
           )}
           {billableProjects.map(p => (
             <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
           ))}
-          {nonBillableProjects.length > 0 && billableProjects.length > 0 && (
-            <div style={{ borderTop: "1px solid #f3f4f6", margin: "4px 0" }} />
+          {overheadProjects.length > 0 && (
+            <>
+              <div style={{ borderTop: "1px solid #f3f4f6", padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>OVERHEAD</div>
+              {overheadProjects.map(p => (
+                <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
+              ))}
+            </>
           )}
-          {nonBillableProjects.map(p => (
-            <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
-          ))}
+          {offsheetProjects.length > 0 && (
+            <>
+              <div style={{ borderTop: "1px solid #f3f4f6", padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>NON-BILLABLE</div>
+              {offsheetProjects.map(p => (
+                <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
+              ))}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -247,7 +274,11 @@ function ProjectOption({ project, onSelect }) {
           {[project.serviceCode, project.taskCode].filter(Boolean).join("/")}
         </span>
       )}
-      {project.billable === false && <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>NB</span>}
+      {project.billable === false && (
+        <span style={{ fontSize: 10, color: "#6b7280", background: "#f1f5f9", padding: "1px 6px", borderRadius: 3 }}>
+          {project.overhead ? (OVERHEAD_BADGE[project.id] || "OH") : "NB"}
+        </span>
+      )}
     </div>
   );
 }
@@ -724,7 +755,7 @@ function App() {
   };
 
   const deleteProject = id => {
-    if (id === NONBILLABLE_ID) return;
+    if (id === NONBILLABLE_ID || OVERHEAD_DEFAULTS.some(d => d.id === id)) return;
     setProjects(p => p.filter(x => x.id !== id));
     setEntries(p => p.filter(e => e.projectId !== id));
   };
@@ -831,6 +862,7 @@ function App() {
 
     const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
     const billWk = allWk.filter(e => projMap[e.projectId]?.billable !== false);
+    const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && (p.billable !== false || p.overhead === true); });
     const billProjects = projects.filter(p => p.billable !== false && billWk.some(e => e.projectId === p.id));
     if (!billProjects.length) { alert("No billable entries for that week."); return; }
 
@@ -839,8 +871,8 @@ function App() {
     const projTotal = projId =>
       +dates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
 
-    const dayTotals = dates.map(d => allWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
-    const totalAll  = +allWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+    const dayTotals = dates.map(d => workWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
+    const totalAll  = +workWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
     const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
 
     const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
@@ -865,11 +897,12 @@ function App() {
       }),
       // One spare blank project row (template convention)
       [E, E, E, E, ...blank(7), 0, 0],
-      // Non-billable section — fixed rows matching template; hours left blank for manual entry
-      ["Continuing Education", E, E, E, ...blank(7), 0, E],
-      ["AIA Awards",           E, E, E, ...blank(7), 0, E],
-      ["Marketing",            E, E, E, ...blank(7), 0, E],
-      ["Overhead",             E, E, E, ...blank(7), 0, E],
+      // Overhead rows — real hours from logged entries
+      ...OVERHEAD_DEFAULTS.map(oh => {
+        const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
+        const tot = projTotal(oh.id);
+        return [OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E];
+      }),
       // Totals
       ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
       // Footer left/right pairs
@@ -1259,16 +1292,20 @@ function App() {
                         fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 4,
                         background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
                       }}>{proj.taskCode}</span>}
-                      {isNB && <span style={{
+                      {proj.overhead && <span style={{
                         fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
                         padding: "1px 6px", borderRadius: 3
-                      }}>non-billable · excluded from exports</span>}
+                      }}>overhead · in weekly timesheet</span>}
+                      {isNB && !proj.overhead && <span style={{
+                        fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
+                        padding: "1px 6px", borderRadius: 3
+                      }}>non-billable · excluded from all exports</span>}
                     </div>
                     <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "right", lineHeight: 1.6 }}>
                       <div>{fmtHrs(hrs)}h total</div>
                       <div>{pe.length} entries</div>
                     </div>
-                    {!isNB && (
+                    {proj.billable !== false && (
                       <button onClick={() => deleteProject(proj.id)} style={s.btnGhost}>✕</button>
                     )}
                   </div>
@@ -1373,7 +1410,7 @@ function App() {
                 <div style={{ fontSize: 10, fontWeight: 500, color: "#16a34a", letterSpacing: "0.07em", marginBottom: 6 }}>WEEKLY TIMESHEET</div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Excel export</div>
                 <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
-                  Matches the firm template — Job #, Services, Tasks columns, daily hours, totals, and footer rows. Non-billable section rows left blank for manual entry.
+                  Matches the firm template — Job #, Services, Tasks columns, daily hours, and totals. Overhead rows (CE, AIA Awards, Marketing, Overhead) are filled from logged entries.
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <label style={s.label}>ANY DATE IN TARGET WEEK</label>
