@@ -193,9 +193,9 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
   }, [open]);
 
   const selected = projects.find(p => p.id === value);
-  const billableProjects = projects.filter(p => p.billable !== false);
-  const overheadProjects = projects.filter(p => p.overhead === true);
-  const offsheetProjects = projects.filter(p => p.billable === false && !p.overhead);
+  const billableProjects = projects.filter(p => p.billable !== false && !p.archived);
+  const overheadProjects = projects.filter(p => p.overhead === true && !p.archived);
+  const offsheetProjects = projects.filter(p => p.billable === false && !p.overhead && !p.archived);
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -653,6 +653,7 @@ function App() {
   const [pending, setPending] = useState(null); // { startMin, durationMin } | null
 
   const [showPF, setShowPF] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [pName, setPName] = useState("");
   const [pCode, setPCode] = useState("");
   const [pColor, setPColor] = useState(PALETTE[0]);
@@ -760,6 +761,12 @@ function App() {
     setEditingProjectId(null);
   };
 
+  const archiveProject = id => {
+    setProjects(p => p.map(x => x.id === id ? { ...x, archived: true } : x));
+    setEditingProjectId(null);
+  };
+  const restoreProject = id => setProjects(p => p.map(x => x.id === id ? { ...x, archived: false } : x));
+
   const deleteProject = id => {
     if (id === NONBILLABLE_ID || OVERHEAD_DEFAULTS.some(d => d.id === id)) return;
     setProjects(p => p.filter(x => x.id !== id));
@@ -785,7 +792,7 @@ function App() {
     const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
     const targets = entries.filter(e =>
       e.date >= mStart && e.date <= mEnd &&
-      projMap[e.projectId]?.billable !== false && e.note
+      projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived && e.note
     );
     if (!targets.length) { alert("No billable entries with notes for that month."); return; }
 
@@ -867,9 +874,9 @@ function App() {
     const sun = dates[6];
 
     const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
-    const billWk = allWk.filter(e => projMap[e.projectId]?.billable !== false);
-    const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && (p.billable !== false || p.overhead === true); });
-    const billProjects = projects.filter(p => p.billable !== false && billWk.some(e => e.projectId === p.id));
+    const billWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && p.billable !== false && !p.archived; });
+    const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && !p.archived && (p.billable !== false || p.overhead === true); });
+    const billProjects = projects.filter(p => p.billable !== false && !p.archived && billWk.some(e => e.projectId === p.id));
     if (!billProjects.length) { alert("No billable entries for that week."); return; }
 
     const projDayHrs = (projId, date) =>
@@ -903,8 +910,8 @@ function App() {
       }),
       // One spare blank project row (template convention)
       [E, E, E, E, ...blank(7), 0, 0],
-      // Overhead rows — real hours from logged entries
-      ...OVERHEAD_DEFAULTS.map(oh => {
+      // Overhead rows — real hours from logged entries (skip archived)
+      ...OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived).map(oh => {
         const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
         const tot = projTotal(oh.id);
         return [OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E];
@@ -938,10 +945,10 @@ function App() {
     const mStart = xMonth + "-01";
     const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
     const me = entries.filter(e => e.date >= mStart && e.date <= mEnd
-      && projMap[e.projectId]?.billable !== false);
+      && projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived);
     if (!me.length) { alert("No billable entries for that month."); return; }
 
-    const used = projects.filter(p => p.billable !== false && me.some(e => e.projectId === p.id));
+    const used = projects.filter(p => p.billable !== false && !p.archived && me.some(e => e.projectId === p.id));
     const monthName = new Date(mStart + "T12:00:00").toLocaleDateString("en-US", { month: "long" });
 
     // Sunday of the week containing a given date (week-ending convention)
@@ -1061,7 +1068,7 @@ function App() {
                 <div style={s.statLabel}>non-billable this month</div>
               </div>
               <div style={s.stat}>
-                <div style={s.statNum}>{new Set(mAll.filter(e => projMap[e.projectId]?.billable !== false).map(e => e.projectId)).size}</div>
+                <div style={s.statNum}>{new Set(mAll.filter(e => projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived).map(e => e.projectId)).size}</div>
                 <div style={s.statLabel}>active billable projects</div>
               </div>
               <div style={s.stat}>
@@ -1214,8 +1221,9 @@ function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <span style={{ fontSize: 13, color: "#6b7280" }}>
-                {projects.length} project{projects.length !== 1 ? "s" : ""}
-                {" "}({projects.filter(p => p.billable !== false).length} billable)
+                {projects.filter(p => !p.archived).length} active
+                {" · "}{projects.filter(p => p.billable !== false && !p.archived).length} billable
+                {projects.some(p => p.archived) ? ` · ${projects.filter(p => p.archived).length} archived` : ""}
               </span>
               <button onClick={() => setShowPF(v => !v)} style={{
                 ...s.btnPrimary(), padding: "8px 16px"
@@ -1253,7 +1261,7 @@ function App() {
             )}
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {projects.map(proj => {
+              {projects.filter(p => !p.archived).map(proj => {
                 const pe = entries.filter(e => e.projectId === proj.id);
                 const hrs = pe.reduce((s, e) => s + e.hours, 0);
                 const isNB = proj.billable === false;
@@ -1293,6 +1301,17 @@ function App() {
                           borderRadius: 6, padding: "8px 16px", fontSize: 13, cursor: "pointer"
                         }}>Cancel</button>
                       </div>
+                      {proj.billable !== false && (
+                        <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid #f3f4f6" }}>
+                          <button onClick={() => archiveProject(proj.id)} style={{
+                            background: "transparent", color: "#9ca3af", border: "1px solid #e5e7eb",
+                            borderRadius: 6, padding: "6px 14px", fontSize: 12, cursor: "pointer"
+                          }}>Archive project</button>
+                          <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4 }}>
+                            Hides from picker and exports. All entries are preserved and can be restored later.
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 }
@@ -1333,6 +1352,47 @@ function App() {
                 );
               })}
             </div>
+
+            {/* Archived projects */}
+            {projects.some(p => p.archived) && (
+              <div style={{ marginTop: 20 }}>
+                <button onClick={() => setShowArchived(v => !v)} style={{
+                  background: "none", border: "none", cursor: "pointer",
+                  fontSize: 12, color: "#9ca3af", padding: "4px 0", display: "flex", alignItems: "center", gap: 6
+                }}>
+                  <span>{showArchived ? "▲" : "▼"}</span>
+                  <span>Archived ({projects.filter(p => p.archived).length})</span>
+                </button>
+                {showArchived && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                    {projects.filter(p => p.archived).map(proj => {
+                      const pe = entries.filter(e => e.projectId === proj.id);
+                      const hrs = pe.reduce((s, e) => s + e.hours, 0);
+                      return (
+                        <div key={proj.id} style={{
+                          ...s.card, display: "flex", alignItems: "center", gap: 12, padding: "12px 16px",
+                          opacity: 0.6, background: "#f9fafb"
+                        }}>
+                          <div style={{ width: 10, height: 10, borderRadius: "50%", background: proj.color, flexShrink: 0 }} />
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontSize: 14, fontWeight: 500, color: "#374151" }}>{proj.name}</span>
+                            {proj.code && <span style={{
+                              fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 8,
+                              background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
+                            }}>{proj.code}</span>}
+                          </div>
+                          <div style={{ fontSize: 12, color: "#9ca3af", textAlign: "right", lineHeight: 1.6 }}>
+                            <div>{fmtHrs(hrs)}h total</div>
+                            <div>{pe.length} entries</div>
+                          </div>
+                          <button onClick={() => restoreProject(proj.id)} style={s.btnGhost}>Restore</button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
