@@ -148,7 +148,11 @@ const s = {
   statLabel: { fontSize: 11, color: "#9ca3af", marginTop: 4 },
 };
 
-// ----- Storage layer (File System Access API) -----------------------------
+// ----- Storage layer (File System Access API + localStorage fallback) ------
+// File System Access API is Chromium-only. Safari/Firefox fall back to
+// localStorage automatically — no setup required on those browsers.
+
+const FS_SUPPORTED = typeof window.showDirectoryPicker === "function";
 
 const IDB_NAME = "tk_fs_v1";
 const IDB_STORE = "handles";
@@ -729,6 +733,7 @@ function SetupScreen({ onPick }) {
           </div>
           <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 10, lineHeight: 1.5 }}>
             Any existing data in this browser will be carried over automatically.
+            Requires Chrome or Edge — open the file in one of those to set this up.
           </div>
         </div>
         <button onClick={onPick} style={{ ...s.btnPrimary(), padding: "12px 0", fontSize: 14, width: "100%", borderRadius: 8 }}>
@@ -784,9 +789,20 @@ function App() {
 
   const initialized = useRef(false);
 
-  // On mount: restore stored folder handle and load data.json, or prompt for folder.
+  // On mount: load data from file (Chromium) or localStorage (Safari/Firefox).
   useEffect(() => {
     (async () => {
+      if (!FS_SUPPORTED) {
+        // localStorage path — works in any browser
+        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(readLocalStorage());
+        setProjects(ps);
+        setEntries(es);
+        setTimelineRange(tr);
+        initialized.current = true;
+        setStatus("ready");
+        return;
+      }
+      // File System API path — Chromium only
       try {
         const handle = await getStoredHandle();
         if (handle && await verifyPermission(handle)) {
@@ -807,9 +823,18 @@ function App() {
     })();
   }, []);
 
-  // Write data.json whenever data changes (debounced 400 ms).
+  // Save on every data change — file (Chromium) or localStorage (fallback).
   useEffect(() => {
-    if (!initialized.current || !dirHandle) return;
+    if (!initialized.current) return;
+    if (!FS_SUPPORTED || !dirHandle) {
+      // localStorage fallback
+      try {
+        localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(projects));
+        localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(entries));
+        localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(timelineRange));
+      } catch (e) { console.error("Timekeeper localStorage save error:", e); }
+      return;
+    }
     const id = setTimeout(() => {
       writeDataFile(dirHandle, { projects, entries, timelineRange })
         .catch(e => console.error("Timekeeper save error:", e));
@@ -869,10 +894,6 @@ function App() {
   };
 
   const pickFolder = async () => {
-    if (!window.showDirectoryPicker) {
-      alert("File storage requires Chrome or Edge. This browser is not supported.");
-      return;
-    }
     try {
       const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn: "documents" });
       await storeHandle(handle);
@@ -1693,10 +1714,25 @@ function App() {
           {/* Data storage */}
           <div style={{ ...s.card, marginTop: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 6 }}>DATA STORAGE</div>
-            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
-              Projects and entries are saved to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.
-            </div>
-            <button onClick={pickFolder} style={s.btnGhost}>Change folder…</button>
+            {FS_SUPPORTED && dirHandle ? (
+              <>
+                <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
+                  Projects and entries are saved to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.
+                </div>
+                <button onClick={pickFolder} style={s.btnGhost}>Change folder…</button>
+              </>
+            ) : FS_SUPPORTED ? (
+              <>
+                <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
+                  No data folder set. Pick one to save your data as a real file.
+                </div>
+                <button onClick={pickFolder} style={s.btnGhost}>Choose folder…</button>
+              </>
+            ) : (
+              <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6 }}>
+                Data is stored in browser localStorage. Open in Chrome or Edge to switch to file-based storage.
+              </div>
+            )}
           </div>
 
         )}
