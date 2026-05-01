@@ -788,6 +788,7 @@ function App() {
   const [aiStatus, setAiStatus] = useState(null); // null | { expanded, total } | { error }
 
   const initialized = useRef(false);
+  const restoreInputRef = useRef(null);
 
   // On mount: load data from file (Chromium) or localStorage (Safari/Firefox).
   useEffect(() => {
@@ -891,6 +892,39 @@ function App() {
       : e));
     if (editing.date === selectedDay) autoExtendRange(startMin, hours);
     setEditing(null);
+  };
+
+  const backupData = () => {
+    const blob = new Blob(
+      [JSON.stringify({ projects, entries, timelineRange }, null, 2)],
+      { type: "application/json" }
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `timekeeper_backup_${todayStr()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const restoreData = e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = "";
+    if (!window.confirm(`Replace all current data with the contents of "${file.name}"? This cannot be undone.`)) return;
+    const reader = new FileReader();
+    reader.onload = evt => {
+      try {
+        const raw = JSON.parse(evt.target.result);
+        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+        setProjects(ps);
+        setEntries(es);
+        setTimelineRange(tr);
+      } catch {
+        alert("Could not read that file — make sure it's a valid Timekeeper backup.");
+      }
+    };
+    reader.readAsText(file);
   };
 
   const pickFolder = async () => {
@@ -1714,25 +1748,24 @@ function App() {
           {/* Data storage */}
           <div style={{ ...s.card, marginTop: 14 }}>
             <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 6 }}>DATA STORAGE</div>
-            {FS_SUPPORTED && dirHandle ? (
-              <>
-                <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
-                  Projects and entries are saved to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.
-                </div>
-                <button onClick={pickFolder} style={s.btnGhost}>Change folder…</button>
-              </>
-            ) : FS_SUPPORTED ? (
-              <>
-                <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
-                  No data folder set. Pick one to save your data as a real file.
-                </div>
-                <button onClick={pickFolder} style={s.btnGhost}>Choose folder…</button>
-              </>
-            ) : (
-              <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6 }}>
-                Data is stored in browser localStorage. Open in Chrome or Edge to switch to file-based storage.
-              </div>
-            )}
+            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 12 }}>
+              {FS_SUPPORTED && dirHandle
+                ? <>Saving to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.</>
+                : FS_SUPPORTED
+                  ? "No data folder set. Pick one to save your data as a real file."
+                  : "Saving to browser localStorage (Chrome/Edge required for file-based storage)."}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {FS_SUPPORTED && (
+                <button onClick={pickFolder} style={s.btnGhost}>
+                  {dirHandle ? "Change folder…" : "Choose folder…"}
+                </button>
+              )}
+              <button onClick={backupData} style={s.btnGhost}>↓ Download backup</button>
+              <button onClick={() => restoreInputRef.current?.click()} style={s.btnGhost}>↑ Restore from backup</button>
+            </div>
+            <input ref={restoreInputRef} type="file" accept=".json" onChange={restoreData}
+              style={{ display: "none" }} />
           </div>
 
         )}
