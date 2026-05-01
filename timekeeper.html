@@ -148,36 +148,110 @@ const s = {
   statLabel: { fontSize: 11, color: "#9ca3af", marginTop: 4 },
 };
 
-// ----- Storage layer (TEMPORARY: localStorage) ----------------------------
+// ----- Storage layer (File System Access API) -----------------------------
 
-const loadProjects = () => {
+const IDB_NAME = "tk_fs_v1";
+const IDB_STORE = "handles";
+
+const openIDB = () => new Promise((resolve, reject) => {
+  const req = indexedDB.open(IDB_NAME, 1);
+  req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+  req.onsuccess = e => resolve(e.target.result);
+  req.onerror = () => reject(req.error);
+});
+
+const getStoredHandle = async () => {
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.projects);
-    if (!raw) return [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT];
-    const arr = JSON.parse(raw);
-    if (!arr.some(p => p.id === NONBILLABLE_ID)) arr.push(NONBILLABLE_DEFAULT);
-    for (const def of OVERHEAD_DEFAULTS) {
-      if (!arr.some(p => p.id === def.id)) arr.push(def);
-    }
-    return arr;
-  } catch { return [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT]; }
+    const db = await openIDB();
+    return await new Promise(resolve => {
+      const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get("dir");
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch { return null; }
 };
-const loadEntries = () => {
+
+const storeHandle = async handle => {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEYS.entries) || "[]");
-    // Backfill startMinutes for legacy entries (per-day stack starting at 9 AM)
+    const db = await openIDB();
+    await new Promise((resolve, reject) => {
+      const req = db.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).put(handle, "dir");
+      req.onsuccess = resolve;
+      req.onerror = () => reject(req.error);
+    });
+  } catch { /* non-fatal */ }
+};
+
+const verifyPermission = async handle => {
+  const opts = { mode: "readwrite" };
+  if (await handle.queryPermission(opts) === "granted") return true;
+  if (await handle.requestPermission(opts) === "granted") return true;
+  return false;
+};
+
+const readDataFile = async dirHandle => {
+  try {
+    const fh = await dirHandle.getFileHandle("data.json");
+    const file = await fh.getFile();
+    return JSON.parse(await file.text());
+  } catch (e) {
+    if (e.name === "NotFoundError") return null;
+    throw e;
+  }
+};
+
+const writeDataFile = async (dirHandle, data) => {
+  const fh = await dirHandle.getFileHandle("data.json", { create: true });
+  const writable = await fh.createWritable();
+  await writable.write(JSON.stringify(data, null, 2));
+  await writable.close();
+};
+
+// One-time migration: read whatever is in localStorage and return it as a data object.
+const readLocalStorage = () => {
+  try {
+    const rawP = localStorage.getItem(STORAGE_KEYS.projects);
+    let projects = rawP ? JSON.parse(rawP) : [];
+    if (!projects.some(p => p.id === NONBILLABLE_ID)) projects.push(NONBILLABLE_DEFAULT);
+    for (const def of OVERHEAD_DEFAULTS) {
+      if (!projects.some(p => p.id === def.id)) projects.push(def);
+    }
+    const rawEntries = JSON.parse(localStorage.getItem(STORAGE_KEYS.entries) || "[]");
     const dayCursor = {};
-    return raw.map(e => {
+    const entries = rawEntries.map(e => {
       if (typeof e.startMinutes === "number") return e;
       const cur = dayCursor[e.date] ?? 9 * 60;
-      const start = cur;
       dayCursor[e.date] = cur + hoursToMin(e.hours || 0);
-      return { ...e, startMinutes: start };
+      return { ...e, startMinutes: cur };
     });
-  } catch { return []; }
+    const rawR = localStorage.getItem(RANGE_STORAGE_KEY);
+    const timelineRange = rawR ? JSON.parse(rawR) : {};
+    return { projects, entries, timelineRange };
+  } catch {
+    return { projects: [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {} };
+  }
 };
-const saveProjects = ps => localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(ps));
-const saveEntries = es => localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(es));
+
+const clearLocalStorage = () => {
+  [STORAGE_KEYS.projects, STORAGE_KEYS.entries, RANGE_STORAGE_KEY].forEach(k => localStorage.removeItem(k));
+};
+
+// Seed required protected projects and backfill legacy entry fields.
+const processLoadedData = data => {
+  let { projects = [], entries = [], timelineRange = {} } = data;
+  if (!projects.some(p => p.id === NONBILLABLE_ID)) projects = [...projects, NONBILLABLE_DEFAULT];
+  for (const def of OVERHEAD_DEFAULTS) {
+    if (!projects.some(p => p.id === def.id)) projects = [...projects, def];
+  }
+  const dayCursor = {};
+  entries = entries.map(e => {
+    if (typeof e.startMinutes === "number") return e;
+    const cur = dayCursor[e.date] ?? 9 * 60;
+    dayCursor[e.date] = cur + hoursToMin(e.hours || 0);
+    return { ...e, startMinutes: cur };
+  });
+  return { projects, entries, timelineRange };
+};
 
 // ----- ProjectPicker -------------------------------------------------------
 
@@ -639,11 +713,42 @@ function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
   );
 }
 
+// ----- SetupScreen ---------------------------------------------------------
+
+function SetupScreen({ onPick }) {
+  return (
+    <div style={{ ...s.root, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ maxWidth: 440, width: "100%", padding: 32, textAlign: "center" }}>
+        <div style={{ fontSize: 26, fontWeight: 700, color: "#111827", marginBottom: 4 }}>Timekeeper</div>
+        <div style={{ fontSize: 11, color: "#9ca3af", letterSpacing: "0.1em", marginBottom: 36 }}>TIME &amp; BILLING</div>
+        <div style={{ ...s.card, textAlign: "left", marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#111827", marginBottom: 8 }}>Choose a data folder</div>
+          <div style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.65 }}>
+            Timekeeper saves your projects and time entries to a <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 12 }}>data.json</code> file.
+            Pick the folder where you'd like to keep it — your <strong>Time Keeper</strong> project folder is the natural choice.
+          </div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 10, lineHeight: 1.5 }}>
+            Any existing data in this browser will be carried over automatically.
+          </div>
+        </div>
+        <button onClick={onPick} style={{ ...s.btnPrimary(), padding: "12px 0", fontSize: 14, width: "100%", borderRadius: 8 }}>
+          Choose folder…
+        </button>
+        <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 12 }}>
+          You'll only need to do this once. The browser remembers your choice.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ----- Main App ------------------------------------------------------------
 
 function App() {
-  const [projects, setProjects] = useState(loadProjects);
-  const [entries, setEntries] = useState(loadEntries);
+  const [status, setStatus] = useState("loading"); // "loading" | "needs-folder" | "ready"
+  const [dirHandle, setDirHandle] = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [entries, setEntries] = useState([]);
   const [tab, setTab] = useState("log");
 
   const [selectedDay, setSelectedDay] = useState(todayStr());
@@ -668,10 +773,7 @@ function App() {
 
   const [editing, setEditing] = useState(null); // entry being edited | null
 
-  const [timelineRange, setTimelineRange] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(RANGE_STORAGE_KEY) || "{}"); }
-    catch { return {}; }
-  });
+  const [timelineRange, setTimelineRange] = useState({});
 
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("tk_api_key") || "");
   const [aiInstructions, setAiInstructions] = useState(
@@ -680,11 +782,41 @@ function App() {
   const [aiRunning, setAiRunning] = useState(false);
   const [aiStatus, setAiStatus] = useState(null); // null | { expanded, total } | { error }
 
-  useEffect(() => { saveProjects(projects); }, [projects]);
-  useEffect(() => { saveEntries(entries); }, [entries]);
+  const initialized = useRef(false);
+
+  // On mount: restore stored folder handle and load data.json, or prompt for folder.
   useEffect(() => {
-    localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(timelineRange));
-  }, [timelineRange]);
+    (async () => {
+      try {
+        const handle = await getStoredHandle();
+        if (handle && await verifyPermission(handle)) {
+          const raw = await readDataFile(handle) || readLocalStorage();
+          const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+          setProjects(ps);
+          setEntries(es);
+          setTimelineRange(tr);
+          setDirHandle(handle);
+          initialized.current = true;
+          setStatus("ready");
+          return;
+        }
+      } catch (e) {
+        console.error("Timekeeper load error:", e);
+      }
+      setStatus("needs-folder");
+    })();
+  }, []);
+
+  // Write data.json whenever data changes (debounced 400 ms).
+  useEffect(() => {
+    if (!initialized.current || !dirHandle) return;
+    const id = setTimeout(() => {
+      writeDataFile(dirHandle, { projects, entries, timelineRange })
+        .catch(e => console.error("Timekeeper save error:", e));
+    }, 400);
+    return () => clearTimeout(id);
+  }, [projects, entries, timelineRange, dirHandle]);
+
   useEffect(() => {
     apiKey ? localStorage.setItem("tk_api_key", apiKey) : localStorage.removeItem("tk_api_key");
   }, [apiKey]);
@@ -734,6 +866,29 @@ function App() {
       : e));
     if (editing.date === selectedDay) autoExtendRange(startMin, hours);
     setEditing(null);
+  };
+
+  const pickFolder = async () => {
+    if (!window.showDirectoryPicker) {
+      alert("File storage requires Chrome or Edge. This browser is not supported.");
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn: "documents" });
+      await storeHandle(handle);
+      const raw = await readDataFile(handle) || readLocalStorage();
+      const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+      await writeDataFile(handle, { projects: ps, entries: es, timelineRange: tr });
+      clearLocalStorage();
+      setProjects(ps);
+      setEntries(es);
+      setTimelineRange(tr);
+      setDirHandle(handle);
+      initialized.current = true;
+      setStatus("ready");
+    } catch (e) {
+      if (e.name !== "AbortError") alert("Could not access that folder. Please try again.");
+    }
   };
 
   const saveProject = () => {
@@ -1036,6 +1191,13 @@ function App() {
     a.href = url; a.download = `Descriptions_${xMonth}.doc`; a.click();
     URL.revokeObjectURL(url);
   };
+
+  if (status === "loading") return (
+    <div style={{ ...s.root, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ color: "#9ca3af", fontSize: 13 }}>Loading…</div>
+    </div>
+  );
+  if (status === "needs-folder") return <SetupScreen onPick={pickFolder} />;
 
   return (
     <div style={s.root}>
@@ -1527,7 +1689,16 @@ function App() {
               </div>
 
             </div>
+
+          {/* Data storage */}
+          <div style={{ ...s.card, marginTop: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 6 }}>DATA STORAGE</div>
+            <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 10 }}>
+              Projects and entries are saved to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.
+            </div>
+            <button onClick={pickFolder} style={s.btnGhost}>Change folder…</button>
           </div>
+
         )}
 
       </div>
