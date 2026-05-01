@@ -99,6 +99,25 @@ const weekDatesFrom = start => Array.from({ length: 7 }, (_, i) => {
   d.setDate(d.getDate() + i);
   return fmtDate(d);
 });
+// Returns [{mon, sun}, ...] for each week whose Sunday falls within yearMonth ("YYYY-MM").
+const getWeeksInMonth = yearMonth => {
+  const [y, m] = yearMonth.split("-").map(Number);
+  const firstDay = new Date(y, m - 1, 1);
+  const lastDay = new Date(y, m, 0);
+  const dow = firstDay.getDay();
+  const firstSun = new Date(firstDay);
+  if (dow !== 0) firstSun.setDate(firstSun.getDate() + (7 - dow));
+  const weeks = [];
+  let sun = new Date(firstSun);
+  while (sun <= lastDay) {
+    const mon = new Date(sun);
+    mon.setDate(sun.getDate() - 6);
+    weeks.push({ mon: fmtDate(mon), sun: fmtDate(sun) });
+    sun = new Date(sun);
+    sun.setDate(sun.getDate() + 7);
+  }
+  return weeks;
+};
 
 const minToHHMM = m => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const hhmmToMin = s => {
@@ -696,7 +715,7 @@ function EntryModal({ initial, projects, date, onConfirm, onCancel }) {
         </div>
 
         <div style={{ marginBottom: 18 }}>
-          <label style={s.label}>NOTE (brief — AI will polish at month-end)</label>
+          <label style={s.label}>NOTE</label>
           <input type="text" value={note} onChange={e => setNote(e.target.value)}
             onKeyDown={e => e.key === "Enter" && canSubmit && submit()}
             placeholder="e.g. drafted wireframes, client review call, fixed auth bug"
@@ -773,19 +792,11 @@ function App() {
   const [editPCode, setEditPCode] = useState("");
   const [editPColor, setEditPColor] = useState(PALETTE[0]);
 
-  const [xWeek, setXWeek] = useState(todayStr());
   const [xMonth, setXMonth] = useState(todayStr().slice(0, 7));
 
   const [editing, setEditing] = useState(null); // entry being edited | null
 
   const [timelineRange, setTimelineRange] = useState({});
-
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("tk_api_key") || "");
-  const [aiInstructions, setAiInstructions] = useState(
-    () => localStorage.getItem("tk_ai_instructions") || ""
-  );
-  const [aiRunning, setAiRunning] = useState(false);
-  const [aiStatus, setAiStatus] = useState(null); // null | { expanded, total } | { error }
 
   const initialized = useRef(false);
   const restoreInputRef = useRef(null);
@@ -843,15 +854,6 @@ function App() {
     return () => clearTimeout(id);
   }, [projects, entries, timelineRange, dirHandle]);
 
-  useEffect(() => {
-    apiKey ? localStorage.setItem("tk_api_key", apiKey) : localStorage.removeItem("tk_api_key");
-  }, [apiKey]);
-  useEffect(() => {
-    aiInstructions
-      ? localStorage.setItem("tk_ai_instructions", aiInstructions)
-      : localStorage.removeItem("tk_ai_instructions");
-  }, [aiInstructions]);
-
   const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
 
   const dayEntries = useMemo(
@@ -873,7 +875,7 @@ function App() {
   const confirmEntry = ({ startMin, hours, projectId, note }) => {
     setEntries(prev => [
       { id: Date.now().toString(), date: selectedDay, projectId, hours,
-        startMinutes: startMin, note, aiNote: "" },
+        startMinutes: startMin, note },
       ...prev
     ]);
     setPending(null);
@@ -983,7 +985,7 @@ function App() {
     setEntries(p => p.filter(e => e.projectId !== id));
   };
 
-  const thisMonth = todayStr().slice(0, 7);
+  const thisMonth = selectedDay.slice(0, 7);
   const mAll = entries.filter(e => e.date.startsWith(thisMonth));
   const billableHours = mAll.filter(e => projMap[e.projectId]?.billable !== false).reduce((s, e) => s + e.hours, 0);
   const nonBillableHours = mAll.filter(e => projMap[e.projectId]?.billable === false).reduce((s, e) => s + e.hours, 0);
@@ -994,257 +996,129 @@ function App() {
   const availableMonths = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
   if (!availableMonths.includes(thisMonth)) availableMonths.unshift(thisMonth);
 
-  // ---- AI note expansion ---------------------------------------------------
-  const runAiExpansion = async () => {
-    if (!apiKey.trim()) { alert("Enter your Anthropic API key first."); return; }
-    const [y, m] = xMonth.split("-");
-    const mStart = xMonth + "-01";
-    const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
-    const targets = entries.filter(e =>
-      e.date >= mStart && e.date <= mEnd &&
-      projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived && e.note
-    );
-    if (!targets.length) { alert("No billable entries with notes for that month."); return; }
+  // ---- Monthly Excel export — one tab per week + Descriptions tab -----------
+  const exportMonthly = () => {
+    const weeks = getWeeksInMonth(xMonth);
+    if (!weeks.length) { alert("No weeks found for that month."); return; }
 
-    setAiRunning(true);
-    setAiStatus(null);
+    // Collect all billable entries whose week-ending Sunday falls in this month
+    const billMonthEntries = entries.filter(e => {
+      const p = projMap[e.projectId];
+      if (!p || p.billable === false || p.archived) return false;
+      return weeks.some(w => e.date >= w.mon && e.date <= w.sun);
+    });
+    if (!billMonthEntries.length) { alert("No billable entries for that month."); return; }
 
-    const systemPrompt = [
-      "You are helping William Craig, an architect at Seibert Architects, P.A., expand brief daily time-entry notes into polished billable work descriptions for client invoices and project records.",
-      "",
-      "Context: Seibert Architects is an architecture firm. William performs Contract Administration (CA) and other architectural services. Common terms include: OAC (Owner-Architect-Contractor meeting), Pay App (Payment Application), ASI (Architect's Supplemental Instructions), RFI (Request for Information), submittal review, punch list, field observation, substantial completion.",
-      "",
-      "Guidelines:",
-      "- Use professional architectural language consistent with CA practice",
-      "- Be specific and factual — do not add information not implied by the original note",
-      "- Past tense, active voice. Do not begin sentences with \"I\"",
-      "- 1–3 sentences per entry, concise but complete",
-      "- Expand abbreviations where natural (e.g. \"OAC mtg\" → \"OAC Progress Meeting\")",
-      aiInstructions.trim() ? `\nAdditional instructions from William:\n${aiInstructions.trim()}` : "",
-      "",
-      'Return ONLY a JSON array: [{"id":"...","expanded":"..."}] — one object per input entry, same order as provided. No other text, no markdown fencing.',
-    ].join("\n");
-
-    const payload = targets.map(e => ({
-      id: e.id,
-      date: e.date,
-      project: projMap[e.projectId]?.name || "",
-      serviceCode: projMap[e.projectId]?.serviceCode || "",
-      taskCode: projMap[e.projectId]?.taskCode || "",
-      note: e.note,
-    }));
-
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": apiKey.trim(),
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-allow-browser": "true",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 8192,
-          system: systemPrompt,
-          messages: [{ role: "user", content: JSON.stringify(payload, null, 2) }],
-        }),
-      });
-
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error?.message || `API error ${resp.status}`);
-      }
-
-      const data = await resp.json();
-      const raw = data.content?.[0]?.text || "";
-      // Strip markdown code fences if the model adds them
-      const clean = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
-      const results = JSON.parse(clean);
-
-      setEntries(prev => prev.map(e => {
-        const hit = results.find(r => r.id === e.id);
-        return hit && hit.expanded ? { ...e, aiNote: hit.expanded } : e;
-      }));
-      setAiStatus({ expanded: results.filter(r => r.expanded).length, total: targets.length });
-    } catch (err) {
-      const msg = err.message.includes("Failed to fetch")
-        ? "Network error — check that Edge/Chrome can reach api.anthropic.com (no firewall or proxy blocking it)."
-        : err.message;
-      setAiStatus({ error: msg });
-    } finally {
-      setAiRunning(false);
-    }
-  };
-
-  // ---- Excel export — matches office "Time" sheet template ------------------
-  const exportExcel = () => {
-    const mon = getMonday(xWeek);
-    const dates = weekDatesFrom(mon);
-    const sun = dates[6];
-
-    const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
-    const billWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && p.billable !== false && !p.archived; });
-    const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && !p.archived && (p.billable !== false || p.overhead === true); });
-    const billProjects = projects.filter(p => p.billable !== false && !p.archived && billWk.some(e => e.projectId === p.id));
-    if (!billProjects.length) { alert("No billable entries for that week."); return; }
-
-    const projDayHrs = (projId, date) =>
-      allWk.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
-    const projTotal = projId =>
-      +dates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
-
-    const dayTotals = dates.map(d => workWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
-    const totalAll  = +workWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
-    const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
-
-    const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
-      { month: "long", day: "numeric", year: "numeric" });
-
-    // blank(n) — n empty strings, used to pad rows to full width
     const E = ""; const blank = n => Array(n).fill(E);
-
-    const aoa = [
-      // Firm header
-      ["SEIBERT ARCHITECTS, P.A.", ...blank(9), "WEEKLY TIME SHEET", E, E],
-      ["CONTRACTED SERVICES / CHANGE IN SERVICE     SERVICES: 2.1  -  2.3 -  2.4 (Tasks: SD,DD,CD)   2.5 -   2.6 - 2.8", ...blank(12)],
-      ["OH - Overhead", ...blank(12)],
-      [...blank(13)],
-      // Column headers
-      ["Project / Client Name", "Job #", "Services", "Tasks", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "TOTAL", "Billable hours *"],
-      // Billable project rows
-      ...billProjects.map(proj => {
-        const dh = dates.map(d => projDayHrs(proj.id, d) || E);
-        const tot = projTotal(proj.id);
-        return [proj.name, proj.code || E, proj.serviceCode || E, proj.taskCode || E, ...dh, tot, tot];
-      }),
-      // One spare blank project row (template convention)
-      [E, E, E, E, ...blank(7), 0, 0],
-      // Overhead rows — real hours from logged entries (skip archived)
-      ...OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived).map(oh => {
-        const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
-        const tot = projTotal(oh.id);
-        return [OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E];
-      }),
-      // Totals
-      ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
-      // Footer left/right pairs
-      ["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)],
-      ["Tolls:",         E, E, "Vacation hours",            ...blank(9)],
-      ["Reimbursables:", E, E, "Sick time",                 ...blank(9)],
-      [E,                E, E, "Holiday",                   ...blank(9)],
-      ["TOTAL HOURS TO BE PAID", ...blank(10), totalAll, E],
-      [`NAME:   WILLIAM CRAIG`, ...blank(12)],
-      [`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"],
-    ];
-
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws["!cols"] = [
-      { wch: 44 }, { wch: 8 }, { wch: 10 }, { wch: 8 },
-      { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 },
-      { wch: 8 }, { wch: 16 },
-    ];
-    XLSX.utils.book_append_sheet(wb, ws, "Time");
-    XLSX.writeFile(wb, `TimeSheet_${sun}.xlsx`);
-  };
-
-  // ---- Word export — one section per project, weeks delineated --------------
-  const exportWord = () => {
-    const [y, m] = xMonth.split("-");
-    const mStart = xMonth + "-01";
-    const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
-    const me = entries.filter(e => e.date >= mStart && e.date <= mEnd
-      && projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived);
-    if (!me.length) { alert("No billable entries for that month."); return; }
-
-    const used = projects.filter(p => p.billable !== false && !p.archived && me.some(e => e.projectId === p.id));
-    const monthName = new Date(mStart + "T12:00:00").toLocaleDateString("en-US", { month: "long" });
-
-    // Sunday of the week containing a given date (week-ending convention)
-    const weekEndingSunday = s => {
-      const d = new Date(s + "T12:00:00");
-      const day = d.getDay(); // 0 = Sun
-      d.setDate(d.getDate() + (day === 0 ? 0 : 7 - day));
-      return fmtDate(d);
-    };
-
-    // "Apr 26" style
     const shortDate = s => new Date(s + "T12:00:00")
       .toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    const B = s => `<b>${s}</b>`;
-    const cell = (content, style = "") =>
-      `<td style="border:1px solid #000;padding:5pt 7pt;vertical-align:top;${style}">${content}</td>`;
+    const buildWeekSheet = ({ mon, sun }) => {
+      const dates = weekDatesFrom(mon);
+      const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
+      const billWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && p.billable !== false && !p.archived; });
+      const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && !p.archived && (p.billable !== false || p.overhead === true); });
+      const billProjects = projects.filter(p => p.billable !== false && !p.archived && billWk.some(e => e.projectId === p.id));
 
-    const sections = used.map((proj, idx) => {
-      const pe = me.filter(e => e.projectId === proj.id)
-        .sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
+      const projDayHrs = (projId, date) =>
+        allWk.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
+      const projTotal = projId =>
+        +dates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
 
-      // Group by week-ending Sunday
-      const weekMap = {};
-      pe.forEach(e => {
-        const wk = weekEndingSunday(e.date);
-        (weekMap[wk] = weekMap[wk] || []).push(e);
+      const dayTotals = dates.map(d => workWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
+      const totalAll  = +workWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+      const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+
+      const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
+        { month: "long", day: "numeric", year: "numeric" });
+
+      const aoa = [
+        ["SEIBERT ARCHITECTS, P.A.", ...blank(9), "WEEKLY TIME SHEET", E, E],
+        ["CONTRACTED SERVICES / CHANGE IN SERVICE     SERVICES: 2.1  -  2.3 -  2.4 (Tasks: SD,DD,CD)   2.5 -   2.6 - 2.8", ...blank(12)],
+        ["OH - Overhead", ...blank(12)],
+        [...blank(13)],
+        ["Project / Client Name", "Job #", "Services", "Tasks", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "TOTAL", "Billable hours *"],
+        ...billProjects.map(proj => {
+          const dh = dates.map(d => projDayHrs(proj.id, d) || E);
+          const tot = projTotal(proj.id);
+          return [proj.name, proj.code || E, proj.serviceCode || E, proj.taskCode || E, ...dh, tot, tot];
+        }),
+        [E, E, E, E, ...blank(7), 0, 0],
+        ...OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived).map(oh => {
+          const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
+          const tot = projTotal(oh.id);
+          return [OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E];
+        }),
+        ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
+        ["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)],
+        ["Tolls:",         E, E, "Vacation hours",            ...blank(9)],
+        ["Reimbursables:", E, E, "Sick time",                 ...blank(9)],
+        [E,                E, E, "Holiday",                   ...blank(9)],
+        ["TOTAL HOURS TO BE PAID", ...blank(10), totalAll, E],
+        [`NAME:   WILLIAM CRAIG`, ...blank(12)],
+        [`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"],
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [
+        { wch: 44 }, { wch: 8 }, { wch: 10 }, { wch: 8 },
+        { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 },
+        { wch: 8 }, { wch: 16 },
+      ];
+      return ws;
+    };
+
+    const buildDescriptionsSheet = () => {
+      const weekEndingSunday = s => {
+        const d = new Date(s + "T12:00:00");
+        const day = d.getDay();
+        d.setDate(d.getDate() + (day === 0 ? 0 : 7 - day));
+        return fmtDate(d);
+      };
+
+      const used = projects.filter(p =>
+        p.billable !== false && !p.archived && billMonthEntries.some(e => e.projectId === p.id)
+      );
+
+      const aoa = [];
+      used.forEach((proj, idx) => {
+        if (idx > 0) aoa.push([E]);
+        aoa.push([proj.name + (proj.code ? `  |  Job #: ${proj.code}` : "")]);
+        aoa.push(["week ending", "Descriptions"]);
+
+        const pe = billMonthEntries.filter(e => e.projectId === proj.id)
+          .sort((a, b) => a.date.localeCompare(b.date));
+
+        const weekMap = {};
+        pe.forEach(e => {
+          const wk = weekEndingSunday(e.date);
+          (weekMap[wk] = weekMap[wk] || []).push(e);
+        });
+
+        Object.keys(weekMap).sort().forEach(wk => {
+          const lines = weekMap[wk].map(e => {
+            return e.note ? `${shortDate(e.date)}: ${e.note}` : null;
+          }).filter(Boolean).join("\n");
+          aoa.push([shortDate(wk), lines || "(no notes)"]);
+        });
       });
-      const weekKeys = Object.keys(weekMap).sort();
 
-      const tableRows = weekKeys.map(wk => {
-        const lines = weekMap[wk].map(e => {
-          const n = e.aiNote || e.note;
-          return n ? `${B(shortDate(e.date) + ":")} ${n}` : null;
-        }).filter(Boolean).join("<br>");
-        return `<tr>
-          ${cell(shortDate(wk), "width:70pt;white-space:nowrap;font-weight:bold")}
-          ${cell(lines || "(no notes)", "line-height:1.6")}
-        </tr>`;
-      }).join("");
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [{ wch: 14 }, { wch: 80 }];
+      return ws;
+    };
 
-      const isLast = idx === used.length - 1;
+    const wb = XLSX.utils.book_new();
 
-      return `<div style="${isLast ? "" : "page-break-after:always"}">
-        <p style="text-align:center;font-size:13pt;font-weight:bold;margin:0 0 10pt">JOB DESCRIPTION/TIMESHEET</p>
-        <table style="border-collapse:collapse;width:100%;margin-bottom:10pt;font-size:11pt;border:none">
-          <tr>
-            <td style="padding:2pt 0;width:50%;border:none">${B("NAME:")} William Craig</td>
-            <td style="padding:2pt 0;border:none"></td>
-          </tr>
-          <tr>
-            <td style="padding:2pt 0;border:none">${B("JOB NAME:")} ${proj.name}</td>
-            <td style="padding:2pt 0;border:none">${B("JOB #:")} ${proj.code || ""}</td>
-          </tr>
-          <tr>
-            <td style="padding:2pt 0;border:none">${B("BILLING PERIOD")} ${monthName}</td>
-            <td style="padding:2pt 0;border:none"></td>
-          </tr>
-          <tr>
-            <td style="padding:2pt 0;border:none">${B("SERVICE CODE #")} ${proj.serviceCode || ""}${proj.serviceCode ? ":" : ""}</td>
-            <td style="padding:2pt 0;border:none">${B("CODE:")} ${proj.taskCode || ""}</td>
-          </tr>
-        </table>
-        <table style="border-collapse:collapse;width:100%;font-size:11pt">
-          <tr>
-            <th style="border:1px solid #000;padding:5pt 7pt;text-align:left;background:#ccc;width:70pt">week ending</th>
-            <th style="border:1px solid #000;padding:5pt 7pt;text-align:left;background:#ccc">Descriptions</th>
-          </tr>
-          ${tableRows}
-        </table>
-      </div>`;
+    weeks.forEach(({ mon, sun }) => {
+      const ws = buildWeekSheet({ mon, sun });
+      const label = shortDate(sun);
+      XLSX.utils.book_append_sheet(wb, ws, `Wk ${label}`);
     });
 
-    const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word">
-      <head><meta charset="utf-8"><style>
-        body{font-family:Calibri,sans-serif;font-size:11pt;margin:1in}
-        @page{margin:1in}
-      </style></head>
-      <body>${sections.join("\n")}</body>
-    </html>`;
+    XLSX.utils.book_append_sheet(wb, buildDescriptionsSheet(), "Descriptions");
 
-    const blob = new Blob([html], { type: "application/msword" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `Descriptions_${xMonth}.doc`; a.click();
-    URL.revokeObjectURL(url);
+    XLSX.writeFile(wb, `TimeSheet_${xMonth}.xlsx`);
   };
 
   if (status === "loading") return (
@@ -1278,11 +1152,11 @@ function App() {
             <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
               <div style={s.stat}>
                 <div style={s.statNum}>{fmtHrs(billableHours)}h</div>
-                <div style={s.statLabel}>billable this month</div>
+                <div style={s.statLabel}>billable · {new Date(thisMonth + "-15").toLocaleDateString("en-US", { month: "short", year: "numeric" })}</div>
               </div>
               <div style={s.stat}>
                 <div style={s.statNum}>{fmtHrs(nonBillableHours)}h</div>
-                <div style={s.statLabel}>non-billable this month</div>
+                <div style={s.statLabel}>non-billable · {new Date(thisMonth + "-15").toLocaleDateString("en-US", { month: "short", year: "numeric" })}</div>
               </div>
               <div style={s.stat}>
                 <div style={s.statNum}>{new Set(mAll.filter(e => projMap[e.projectId]?.billable !== false && !projMap[e.projectId]?.archived).map(e => e.projectId)).size}</div>
@@ -1616,117 +1490,13 @@ function App() {
         {tab === "export" && (
           <div>
 
-            {/* ── AI expansion ── */}
-            {(() => {
-              const [y, m] = xMonth.split("-");
-              const mStart = xMonth + "-01";
-              const mEnd = fmtDate(new Date(parseInt(y), parseInt(m), 0));
-              const monthEntries = entries.filter(e =>
-                e.date >= mStart && e.date <= mEnd &&
-                projMap[e.projectId]?.billable !== false
-              );
-              const withNote = monthEntries.filter(e => e.note);
-              const withAi   = monthEntries.filter(e => e.aiNote);
-              const clearAiNotes = () => {
-                setEntries(prev => prev.map(e =>
-                  monthEntries.find(me => me.id === e.id) ? { ...e, aiNote: "" } : e
-                ));
-                setAiStatus(null);
-              };
-              return (
-                <div style={{ ...s.card, marginBottom: 14, border: "1px solid #c7d2fe", background: "#fafafe" }}>
-                  <div style={{ fontSize: 10, fontWeight: 500, color: "#4f46e5", letterSpacing: "0.07em", marginBottom: 6 }}>AI NOTE EXPANSION</div>
-                  <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Polish notes with Claude</div>
-                  <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 12 }}>
-                    Expands brief daily notes into billable-quality descriptions. Run once at month-end before the Word export — the Word doc will use expanded notes where available.
-                  </div>
-
-                  {/* Status line */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, fontSize: 12 }}>
-                    <span style={{ color: withAi.length === withNote.length && withNote.length > 0 ? "#16a34a" : "#6b7280" }}>
-                      {withNote.length === 0
-                        ? "No notes logged for this month yet."
-                        : withAi.length === 0
-                          ? `${withNote.length} entries with notes — none expanded yet.`
-                          : `${withAi.length} of ${withNote.length} entries expanded.`}
-                    </span>
-                    {withAi.length > 0 && (
-                      <button onClick={clearAiNotes} style={{ ...s.btnGhost, color: "#ef4444", borderColor: "#fecaca" }}>
-                        Clear expanded notes
-                      </button>
-                    )}
-                  </div>
-
-                  {/* API key */}
-                  <div style={{ marginBottom: 10 }}>
-                    <label style={s.label}>ANTHROPIC API KEY</label>
-                    <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
-                      placeholder="sk-ant-api03-…"
-                      style={{ ...s.input, fontFamily: "monospace", fontSize: 12 }} />
-                    <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
-                      Stored in localStorage on this machine only. Never leaves your browser except to reach api.anthropic.com.
-                    </div>
-                  </div>
-
-                  {/* Custom instructions */}
-                  <div style={{ marginBottom: 14 }}>
-                    <label style={s.label}>CUSTOM INSTRUCTIONS (optional — tailor the output language)</label>
-                    <textarea value={aiInstructions} onChange={e => setAiInstructions(e.target.value)}
-                      rows={3}
-                      placeholder={"e.g. Write in third person as \"the Architect\". Use \"Architect's Field Report\" instead of \"field report\". Match the tone of the example notes below:\n…"}
-                      style={{ ...s.input, fontFamily: "system-ui", resize: "vertical", lineHeight: 1.5 }} />
-                  </div>
-
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <button
-                      onClick={runAiExpansion}
-                      disabled={aiRunning || !apiKey.trim() || withNote.length === 0}
-                      style={{
-                        ...s.btnPrimary("#4f46e5"),
-                        opacity: (aiRunning || !apiKey.trim() || withNote.length === 0) ? 0.5 : 1,
-                        cursor: (aiRunning || !apiKey.trim() || withNote.length === 0) ? "not-allowed" : "pointer",
-                      }}>
-                      {aiRunning ? "Expanding…" : `Expand ${withNote.length} note${withNote.length !== 1 ? "s" : ""}`}
-                    </button>
-                    {aiStatus && !aiStatus.error && (
-                      <span style={{ fontSize: 12, color: "#16a34a" }}>
-                        Done — {aiStatus.expanded} of {aiStatus.total} expanded.
-                      </span>
-                    )}
-                    {aiStatus?.error && (
-                      <span style={{ fontSize: 12, color: "#ef4444", flex: 1 }}>{aiStatus.error}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* ── Excel + Word ── */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-
+            {/* ── Monthly export ── */}
+            <div style={{ marginBottom: 14 }}>
               <div style={s.card}>
-                <div style={{ fontSize: 10, fontWeight: 500, color: "#16a34a", letterSpacing: "0.07em", marginBottom: 6 }}>WEEKLY TIMESHEET</div>
+                <div style={{ fontSize: 10, fontWeight: 500, color: "#4f46e5", letterSpacing: "0.07em", marginBottom: 6 }}>MONTHLY TIMESHEET</div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Excel export</div>
                 <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
-                  Matches the firm template — Job #, Services, Tasks columns, daily hours, and totals. Overhead rows (CE, AIA Awards, Marketing, Overhead) are filled from logged entries.
-                </div>
-                <div style={{ marginBottom: 12 }}>
-                  <label style={s.label}>ANY DATE IN TARGET WEEK</label>
-                  <input type="date" value={xWeek} onChange={e => setXWeek(e.target.value)} style={s.input} />
-                </div>
-                <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
-                  Week: <strong style={{ color: "#374151" }}>{getMonday(xWeek)}</strong>
-                  {" → "}
-                  <strong style={{ color: "#374151" }}>{weekDatesFrom(getMonday(xWeek))[6]}</strong>
-                </div>
-                <button onClick={exportExcel} style={{ ...s.btnPrimary("#16a34a"), width: "100%" }}>↓ Download .xlsx</button>
-              </div>
-
-              <div style={s.card}>
-                <div style={{ fontSize: 10, fontWeight: 500, color: "#d97706", letterSpacing: "0.07em", marginBottom: 6 }}>MONTHLY DESCRIPTIONS</div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: "#111827", marginBottom: 4 }}>Word export</div>
-                <div style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.6, marginBottom: 16 }}>
-                  One section per project — JOB DESCRIPTION/TIMESHEET header with weeks delineated. Uses AI-expanded notes where available.
+                  One tab per week (weeks defined by week-ending Sunday) plus a Descriptions tab with notes grouped by project and week.
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <label style={s.label}>BILLING MONTH</label>
@@ -1734,15 +1504,18 @@ function App() {
                 </div>
                 <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
                   {(() => {
-                    const me = entries.filter(e => e.date.startsWith(xMonth)
-                      && projMap[e.projectId]?.billable !== false);
-                    const aiCount = me.filter(e => e.aiNote).length;
-                    return `${me.length} billable entries · ${fmtHrs(me.reduce((s, e) => s + e.hours, 0))}h · ${new Set(me.map(e => e.projectId)).size} projects${aiCount ? ` · ${aiCount} AI-expanded` : ""}`;
+                    const weeks = getWeeksInMonth(xMonth);
+                    const me = entries.filter(e => {
+                      const p = projMap[e.projectId];
+                      if (!p || p.billable === false || p.archived) return false;
+                      return weeks.some(w => e.date >= w.mon && e.date <= w.sun);
+                    });
+                    const proj_count = new Set(me.map(e => e.projectId)).size;
+                    return `${weeks.length} weeks · ${me.length} billable entries · ${fmtHrs(me.reduce((s, e) => s + e.hours, 0))}h · ${proj_count} projects`;
                   })()}
                 </div>
-                <button onClick={exportWord} style={{ ...s.btnPrimary("#d97706"), width: "100%" }}>↓ Download .doc</button>
+                <button onClick={exportMonthly} style={{ ...s.btnPrimary("#4f46e5"), width: "100%" }}>↓ Download .xlsx</button>
               </div>
-
             </div>
 
           {/* Data storage */}
