@@ -212,6 +212,15 @@ const verifyPermission = async handle => {
   return false;
 };
 
+// Mount-time check only — requestPermission requires a user gesture and will
+// silently fail if called during page load. Use this on startup; use
+// verifyPermission (which calls requestPermission) only from a click handler.
+const checkPermissionOnly = async handle => {
+  try {
+    return await handle.queryPermission({ mode: "readwrite" }) === "granted";
+  } catch { return false; }
+};
+
 const readDataFile = async dirHandle => {
   try {
     const fh = await dirHandle.getFileHandle("data.json");
@@ -766,11 +775,41 @@ function SetupScreen({ onPick }) {
   );
 }
 
+// ----- ReconnectScreen -----------------------------------------------------
+
+function ReconnectScreen({ folderName, onReconnect, onPickNew }) {
+  return (
+    <div style={{ ...s.root, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+      <div style={{ maxWidth: 440, width: "100%", padding: 32, textAlign: "center" }}>
+        <div style={{ fontSize: 26, fontWeight: 700, color: "#111827", marginBottom: 4 }}>Timekeeper</div>
+        <div style={{ fontSize: 11, color: "#9ca3af", letterSpacing: "0.1em", marginBottom: 36 }}>TIME &amp; BILLING</div>
+        <div style={{ ...s.card, textAlign: "left", marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#111827", marginBottom: 8 }}>Reconnect to your data folder</div>
+          <div style={{ fontSize: 13, color: "#6b7280", lineHeight: 1.65 }}>
+            The browser lost access to your data folder after restart. Your data is safe —
+            click below to reconnect to <strong style={{ color: "#374151" }}>{folderName}</strong>.
+          </div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 10, lineHeight: 1.5 }}>
+            No data will be changed. This just re-grants browser access to the existing folder.
+          </div>
+        </div>
+        <button onClick={onReconnect} style={{ ...s.btnPrimary(), padding: "12px 0", fontSize: 14, width: "100%", borderRadius: 8, marginBottom: 10 }}>
+          Reconnect to &ldquo;{folderName}&rdquo;
+        </button>
+        <button onClick={onPickNew} style={{ ...s.btnGhost, padding: "10px 0", fontSize: 13, width: "100%", borderRadius: 8 }}>
+          Choose a different folder…
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ----- Main App ------------------------------------------------------------
 
 function App() {
-  const [status, setStatus] = useState("loading"); // "loading" | "needs-folder" | "ready"
+  const [status, setStatus] = useState("loading"); // "loading" | "needs-folder" | "needs-permission" | "ready"
   const [dirHandle, setDirHandle] = useState(null);
+  const [pendingHandle, setPendingHandle] = useState(null); // stored handle awaiting permission re-grant
   const [projects, setProjects] = useState([]);
   const [entries, setEntries] = useState([]);
   const [tab, setTab] = useState("log");
@@ -817,15 +856,24 @@ function App() {
       // File System API path — Chromium only
       try {
         const handle = await getStoredHandle();
-        if (handle && await verifyPermission(handle)) {
-          const raw = await readDataFile(handle) || readLocalStorage();
-          const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
-          setProjects(ps);
-          setEntries(es);
-          setTimelineRange(tr);
-          setDirHandle(handle);
-          initialized.current = true;
-          setStatus("ready");
+        if (handle) {
+          if (await checkPermissionOnly(handle)) {
+            // Permission still active (same browser session) — load immediately.
+            const raw = await readDataFile(handle) || readLocalStorage();
+            const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+            setProjects(ps);
+            setEntries(es);
+            setTimelineRange(tr);
+            setDirHandle(handle);
+            initialized.current = true;
+            setStatus("ready");
+            return;
+          }
+          // Handle found but permission lapsed (typical after browser restart).
+          // Store the handle and ask the user to click to re-grant — requestPermission
+          // requires a user gesture and cannot be called here on mount.
+          setPendingHandle(handle);
+          setStatus("needs-permission");
           return;
         }
       } catch (e) {
@@ -929,9 +977,35 @@ function App() {
     reader.readAsText(file);
   };
 
+  const reconnect = async () => {
+    if (!pendingHandle) return;
+    try {
+      const ok = await verifyPermission(pendingHandle);
+      if (ok) {
+        const raw = await readDataFile(pendingHandle) || readLocalStorage();
+        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+        setProjects(ps);
+        setEntries(es);
+        setTimelineRange(tr);
+        setDirHandle(pendingHandle);
+        setPendingHandle(null);
+        initialized.current = true;
+        setStatus("ready");
+      } else {
+        setPendingHandle(null);
+        setStatus("needs-folder");
+      }
+    } catch (e) {
+      console.error("Reconnect error:", e);
+      setPendingHandle(null);
+      setStatus("needs-folder");
+    }
+  };
+
   const pickFolder = async () => {
     try {
-      const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn: "documents" });
+      const startIn = pendingHandle || "documents";
+      const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn });
       await storeHandle(handle);
       const raw = await readDataFile(handle) || readLocalStorage();
       const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
@@ -941,6 +1015,7 @@ function App() {
       setEntries(es);
       setTimelineRange(tr);
       setDirHandle(handle);
+      setPendingHandle(null);
       initialized.current = true;
       setStatus("ready");
     } catch (e) {
@@ -1125,6 +1200,13 @@ function App() {
     <div style={{ ...s.root, display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
       <div style={{ color: "#9ca3af", fontSize: 13 }}>Loading…</div>
     </div>
+  );
+  if (status === "needs-permission") return (
+    <ReconnectScreen
+      folderName={pendingHandle?.name || "your data folder"}
+      onReconnect={reconnect}
+      onPickNew={() => { setPendingHandle(null); setStatus("needs-folder"); }}
+    />
   );
   if (status === "needs-folder") return <SetupScreen onPick={pickFolder} />;
 
@@ -1526,7 +1608,7 @@ function App() {
             <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 6 }}>DATA STORAGE</div>
             <div style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.6, marginBottom: 12 }}>
               {FS_SUPPORTED && dirHandle
-                ? <>Saving to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in your chosen folder.</>
+                ? <>Saving to <code style={{ background: "#f3f4f6", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>data.json</code> in <strong style={{ color: "#374151" }}>{dirHandle.name}</strong>.</>
                 : FS_SUPPORTED
                   ? "No data folder set. Pick one to save your data as a real file."
                   : "Saving to browser localStorage (Chrome/Edge required for file-based storage)."}
