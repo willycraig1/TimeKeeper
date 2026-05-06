@@ -299,8 +299,18 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
   }, [open]);
 
   const selected = projects.find(p => p.id === value);
-  const billableProjects = projects.filter(p => p.billable !== false && !p.archived);
-  const overheadProjects = projects.filter(p => p.overhead === true && !p.archived);
+  const OVERHEAD_PICK_ORDER = ["_office", "_marketing", "_aia", "_ce"];
+  const overheadProjects = OVERHEAD_PICK_ORDER
+    .map(id => projects.find(p => p.id === id && !p.archived))
+    .filter(Boolean);
+  const billableProjects = projects
+    .filter(p => p.billable !== false && !p.archived)
+    .sort((a, b) => {
+      const an = parseFloat(a.code), bn = parseFloat(b.code);
+      const aNum = isNaN(an) ? Infinity : an;
+      const bNum = isNaN(bn) ? Infinity : bn;
+      return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
+    });
   const offsheetProjects = projects.filter(p => p.billable === false && !p.overhead && !p.archived);
 
   return (
@@ -332,16 +342,20 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
           border: "1px solid #e5e7eb", borderRadius: 6, boxShadow: "0 4px 16px rgba(15,23,42,0.08)",
           maxHeight: 280, overflowY: "auto", zIndex: 50
         }}>
-          {billableProjects.length === 0 && (
-            <div style={{ padding: "10px 12px", fontSize: 12, color: "#9ca3af" }}>No billable projects yet — add one in the Projects tab.</div>
-          )}
-          {billableProjects.map(p => (
-            <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
-          ))}
           {overheadProjects.length > 0 && (
             <>
-              <div style={{ borderTop: "1px solid #f3f4f6", padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>OVERHEAD</div>
+              <div style={{ padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>OVERHEAD</div>
               {overheadProjects.map(p => (
+                <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
+              ))}
+            </>
+          )}
+          {billableProjects.length === 0 ? (
+            <div style={{ borderTop: "1px solid #f3f4f6", padding: "10px 12px", fontSize: 12, color: "#9ca3af" }}>No billable projects yet — add one in the Projects tab.</div>
+          ) : (
+            <>
+              <div style={{ borderTop: "1px solid #f3f4f6", padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>PROJECTS</div>
+              {billableProjects.map(p => (
                 <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
               ))}
             </>
