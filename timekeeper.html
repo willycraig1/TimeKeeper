@@ -530,20 +530,20 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
           {Array.from({ length: hourCount + 1 }, (_, i) => (
             <div key={i} style={{
               position: "absolute", left: 0, right: 0, top: i * HOUR_PX, height: 1,
-              background: i === 0 ? "transparent" : "#f3f4f6", pointerEvents: "none"
+              background: i === 0 ? "transparent" : "#e5e7eb", pointerEvents: "none"
             }} />
           ))}
-          {/* Quarter-hour ticks: at :15, :30, :45 per hour */}
+          {/* Quarter-hour ticks: at :15, :30, :45 per hour — both left and right edges */}
           {Array.from({ length: hourCount }, (_, i) =>
-            [1, 2, 3].map(q => (
-              <div key={`q-${i}-${q}`} style={{
-                position: "absolute", left: 0,
-                width: q === 2 ? 12 : 6,
-                top: i * HOUR_PX + q * (HOUR_PX / 4), height: 1,
-                background: q === 2 ? "#e5e7eb" : "#f0f0f0",
-                pointerEvents: "none"
-              }} />
-            ))
+            [1, 2, 3].flatMap(q => {
+              const w = q === 2 ? 36 : 18;
+              const color = q === 2 ? "#e5e7eb" : "#ebebeb";
+              const top = i * HOUR_PX + q * (HOUR_PX / 4);
+              return [
+                <div key={`ql-${i}-${q}`} style={{ position: "absolute", left: 0,  width: w, top, height: 1, background: color, pointerEvents: "none" }} />,
+                <div key={`qr-${i}-${q}`} style={{ position: "absolute", right: 0, width: w, top, height: 1, background: color, pointerEvents: "none" }} />,
+              ];
+            })
           ).flat()}
 
           {/* Hover block — 15-min shaded region showing where drag will start */}
