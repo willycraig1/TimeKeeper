@@ -447,7 +447,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
       ? { startMin: pending.startMin, durationMin: pending.durationMin, source: "pending" }
       : null;
 
-  const totalLogged = dayEntries.reduce((sum, e) => sum + e.hours, 0);
+  const totalLogged = dayEntries.filter(e => e.projectId !== NONBILLABLE_ID).reduce((sum, e) => sum + e.hours, 0);
 
   // Reusable styles for the extension toggles (top + bottom).
   const toggleBtn = {
