@@ -645,8 +645,9 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
           {ghost && ghost.durationMin > 0 && (
             <div style={{
               position: "absolute",
-              top: ((ghost.startMin - effStart * 60) / 60) * HOUR_PX,
-              height: (ghost.durationMin / 60) * HOUR_PX,
+              top: ((ghost.startMin - effStart * 60) / 60) * HOUR_PX + 1,
+              height: Math.max(2, (ghost.durationMin / 60) * HOUR_PX - 1),
+              boxSizing: "border-box",
               left: 4, right: 4,
               background: "repeating-linear-gradient(135deg, rgba(79,70,229,0.18), rgba(79,70,229,0.18) 6px, rgba(79,70,229,0.32) 6px, rgba(79,70,229,0.32) 12px)",
               borderLeft: "3px solid #4f46e5",
