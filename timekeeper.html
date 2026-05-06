@@ -489,13 +489,20 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
       </div>
       {/* Progress bar */}
       <div style={{ paddingLeft: 56, marginBottom: 10 }}>
-        <div style={{ height: 4, borderRadius: 2, background: "#e5e7eb", overflow: "hidden" }}>
+        <div style={{ height: 4, borderRadius: 2, background: "#e5e7eb", overflow: "hidden", position: "relative" }}>
           <div style={{
             height: "100%", borderRadius: 2,
             background: "#4f46e5",
             width: `${Math.min(100, (totalLogged / TARGET_HOURS) * 100)}%`,
             transition: "width 0.2s ease",
           }} />
+          {Array.from({ length: TARGET_HOURS - 1 }, (_, i) => (
+            <div key={i} style={{
+              position: "absolute", top: 0, bottom: 0,
+              left: `${((i + 1) / TARGET_HOURS) * 100}%`,
+              width: 2, background: "#f9fafb",
+            }} />
+          ))}
         </div>
       </div>
 
