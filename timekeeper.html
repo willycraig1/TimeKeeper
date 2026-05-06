@@ -585,13 +585,21 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
                 position: "absolute", top: top + 1, height: Math.max(2, height - 1), left: 4, right: 4,
                 boxSizing: "border-box",
                 background: proj.color + "22",
-                borderLeft: `6px ${isNB ? "dashed" : "solid"} ${proj.color}`,
+                borderLeft: isNB ? "none" : `6px solid ${proj.color}`,
                 borderRadius: "0 6px 6px 0",
-                padding: "1px 6px",
+                padding: isNB ? "1px 6px 1px 12px" : "1px 6px",
                 overflow: "hidden",
                 cursor: "default",
               }} onMouseDown={e => e.stopPropagation()}
                  onDoubleClick={() => onEntryEdit(entry)}>
+                {/* Custom dashed stripe for non-billable / overhead entries */}
+                {isNB && (
+                  <div style={{
+                    position: "absolute", left: 0, top: 0, bottom: 0, width: 6,
+                    backgroundImage: `repeating-linear-gradient(to bottom, ${proj.color} 0px, ${proj.color} 12px, transparent 12px, transparent 18px)`,
+                    pointerEvents: "none",
+                  }} />
+                )}
                 {/* Top line: project name · time range · hours */}
                 <div style={{ display: "flex", alignItems: "baseline", gap: 6, lineHeight: 1.15 }}>
                   <span style={{ fontWeight: 500, color: proj.color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: 11, flex: "1 1 auto", minWidth: 0 }}>
