@@ -582,7 +582,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
             const tooltip = `${proj.name}${codes ? " — " + codes : ""}\n${minToDisplay(entry.startMinutes)} → ${minToDisplay(endMin)} · ${entry.hours.toFixed(2)}h${entry.note ? "\n\n" + entry.note : ""}${isNB ? "\n[non-billable]" : ""}`;
             return (
               <div key={entry.id} className="tk-entry-block" title={tooltip + "\n\nDouble-click to edit"} style={{
-                position: "absolute", top, height, left: 4, right: 4,
+                position: "absolute", top: top + 1, height: Math.max(2, height - 2), left: 4, right: 4,
                 background: proj.color + "22",
                 borderLeft: `3px ${isNB ? "dashed" : "solid"} ${proj.color}`,
                 borderRadius: "0 6px 6px 0",
