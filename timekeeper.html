@@ -472,7 +472,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
 
   return (
     <div style={{ ...s.card, padding: "14px 14px 14px 8px" }}>
-      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 10, paddingLeft: 56 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6, paddingLeft: 56 }}>
         <div style={{ fontSize: 11, fontWeight: 500, color: "#6b7280", letterSpacing: "0.06em" }}>DAY TIMELINE</div>
         <div style={{ fontSize: 12, color: "#6b7280" }}>
           <span style={{ fontFamily: "monospace", color: "#111827", fontWeight: 600 }}>{totalLogged.toFixed(2)}h</span>
@@ -485,6 +485,17 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
               {ghost.source === "drag" ? "dragging" : "pending"}
             </span>
           )}
+        </div>
+      </div>
+      {/* Progress bar */}
+      <div style={{ paddingLeft: 56, marginBottom: 10 }}>
+        <div style={{ height: 4, borderRadius: 2, background: "#e5e7eb", overflow: "hidden" }}>
+          <div style={{
+            height: "100%", borderRadius: 2,
+            background: "#4f46e5",
+            width: `${Math.min(100, (totalLogged / TARGET_HOURS) * 100)}%`,
+            transition: "width 0.2s ease",
+          }} />
         </div>
       </div>
 
