@@ -65,7 +65,9 @@ const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OF
 // Excel timesheet row labels match the firm's template (Office → "Overhead")
 const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _office: "Overhead" };
 
-const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3" };
+const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tasks: "tk_tasks_v1" };
+const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_aia", "_ce"];
+const SHOW_TODO_KEY = "tk_show_todo_v1";
 
 // Day timeline (vertical, daytimer-style)
 // Default visible range is 7am–7pm; user can extend either end to midnight.
@@ -258,14 +260,15 @@ const readLocalStorage = () => {
     });
     const rawR = localStorage.getItem(RANGE_STORAGE_KEY);
     const timelineRange = rawR ? JSON.parse(rawR) : {};
-    return { projects, entries, timelineRange };
+    const tasks = JSON.parse(localStorage.getItem(STORAGE_KEYS.tasks) || "[]");
+    return { projects, entries, timelineRange, tasks };
   } catch {
-    return { projects: [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {} };
+    return { projects: [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {}, tasks: [] };
   }
 };
 
 const clearLocalStorage = () => {
-  [STORAGE_KEYS.projects, STORAGE_KEYS.entries, RANGE_STORAGE_KEY].forEach(k => localStorage.removeItem(k));
+  [STORAGE_KEYS.projects, STORAGE_KEYS.entries, STORAGE_KEYS.tasks, RANGE_STORAGE_KEY].forEach(k => localStorage.removeItem(k));
 };
 
 // Seed required protected projects and backfill legacy entry fields.
@@ -282,7 +285,8 @@ const processLoadedData = data => {
     dayCursor[e.date] = cur + hoursToMin(e.hours || 0);
     return { ...e, startMinutes: cur };
   });
-  return { projects, entries, timelineRange };
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  return { projects, entries, timelineRange, tasks };
 };
 
 // ----- ProjectPicker -------------------------------------------------------
@@ -846,6 +850,99 @@ function ReconnectScreen({ folderName, onReconnect, onPickNew }) {
   );
 }
 
+// ----- TodoPanel -----------------------------------------------------------
+
+function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onDelete, onClose }) {
+  const [inputs, setInputs] = React.useState({});
+
+  const billableProjs = projects
+    .filter(p => p.billable !== false && !p.archived)
+    .sort((a, b) => {
+      const an = parseFloat(a.code), bn = parseFloat(b.code);
+      const aNum = isNaN(an) ? Infinity : an, bNum = isNaN(bn) ? Infinity : bn;
+      return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
+    });
+  const overheadProjs = OVERHEAD_PANEL_ORDER.map(id => projects.find(p => p.id === id && !p.archived)).filter(Boolean);
+  const nbProj = projects.find(p => p.id === NONBILLABLE_ID && !p.archived);
+  const sections = [...billableProjs, ...overheadProjs, ...(nbProj ? [nbProj] : [])];
+
+  const visibleTasks = tasks.filter(t => t.completedDate === null || t.completedDate === selectedDay);
+
+  const handleKey = (e, projectId) => {
+    if (e.key !== "Enter") return;
+    const text = (inputs[projectId] || "").trim();
+    if (!text) return;
+    onAdd(projectId, text);
+    setInputs(prev => ({ ...prev, [projectId]: "" }));
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 4 }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af", letterSpacing: "0.09em" }}>TO DO</span>
+        <button onClick={onClose} style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "#9ca3af", fontSize: 14, lineHeight: 1, padding: "0 2px"
+        }}>×</button>
+      </div>
+
+      {/* Project sections */}
+      {sections.map(proj => {
+        const isNB = proj.billable === false;
+        const projTasks = visibleTasks.filter(t => t.projectId === proj.id);
+        return (
+          <div key={proj.id} style={{ ...s.card, padding: "8px 10px" }}>
+            {/* Section heading */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+              <div style={{
+                width: 8, height: 8, borderRadius: "50%", background: proj.color, flexShrink: 0,
+                outline: isNB ? `1.5px dashed ${proj.color}` : "none", outlineOffset: 1,
+                background: isNB ? "transparent" : proj.color,
+              }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {proj.name}
+              </span>
+              {proj.code && <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace", flexShrink: 0 }}>{proj.code}</span>}
+            </div>
+
+            {/* Tasks */}
+            {projTasks.map(task => {
+              const done = task.completedDate !== null;
+              return (
+                <div key={task.id} style={{ display: "flex", alignItems: "flex-start", gap: 5, marginBottom: 3, paddingLeft: 2 }}>
+                  <input type="checkbox" checked={done} onChange={() => onToggle(task.id)}
+                    style={{ marginTop: 2, accentColor: proj.color, cursor: "pointer", flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, flex: 1, lineHeight: 1.4, color: done ? "#9ca3af" : "#374151", textDecoration: done ? "line-through" : "none" }}>
+                    {task.text}
+                  </span>
+                  <button onClick={() => onDelete(task.id)} style={{
+                    background: "none", border: "none", cursor: "pointer", color: "#d1d5db",
+                    fontSize: 10, padding: "1px 2px", lineHeight: 1, flexShrink: 0
+                  }}>✕</button>
+                </div>
+              );
+            })}
+
+            {/* Add task input */}
+            <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 2, marginTop: projTasks.length ? 4 : 0 }}>
+              <span style={{ fontSize: 12, color: "#d1d5db", flexShrink: 0, userSelect: "none" }}>+</span>
+              <input
+                type="text"
+                value={inputs[proj.id] || ""}
+                onChange={e => setInputs(prev => ({ ...prev, [proj.id]: e.target.value }))}
+                onKeyDown={e => handleKey(e, proj.id)}
+                placeholder="Add task…"
+                style={{ border: "none", outline: "none", background: "transparent", fontSize: 12, color: "#374151", width: "100%", fontFamily: "inherit" }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ----- Main App ------------------------------------------------------------
 
 function App() {
@@ -878,6 +975,8 @@ function App() {
   const [editing, setEditing] = useState(null); // entry being edited | null
 
   const [timelineRange, setTimelineRange] = useState({});
+  const [tasks, setTasks] = useState([]);
+  const [showTodo, setShowTodo] = useState(() => localStorage.getItem(SHOW_TODO_KEY) !== "false");
 
   const initialized = useRef(false);
   const restoreInputRef = useRef(null);
@@ -887,10 +986,8 @@ function App() {
     (async () => {
       if (!FS_SUPPORTED) {
         // localStorage path — works in any browser
-        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(readLocalStorage());
-        setProjects(ps);
-        setEntries(es);
-        setTimelineRange(tr);
+        const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(readLocalStorage());
+        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
         initialized.current = true;
         setStatus("ready");
         return;
@@ -902,10 +999,8 @@ function App() {
           if (await checkPermissionOnly(handle)) {
             // Permission still active (same browser session) — load immediately.
             const raw = await readDataFile(handle) || readLocalStorage();
-            const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
-            setProjects(ps);
-            setEntries(es);
-            setTimelineRange(tr);
+            const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
+            setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
             setDirHandle(handle);
             initialized.current = true;
             setStatus("ready");
@@ -933,16 +1028,19 @@ function App() {
       try {
         localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(projects));
         localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(entries));
+        localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks));
         localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(timelineRange));
       } catch (e) { console.error("Timekeeper localStorage save error:", e); }
       return;
     }
     const id = setTimeout(() => {
-      writeDataFile(dirHandle, { projects, entries, timelineRange })
+      writeDataFile(dirHandle, { projects, entries, tasks, timelineRange })
         .catch(e => console.error("Timekeeper save error:", e));
     }, 400);
     return () => clearTimeout(id);
-  }, [projects, entries, timelineRange, dirHandle]);
+  }, [projects, entries, tasks, timelineRange, dirHandle]);
+
+  useEffect(() => { localStorage.setItem(SHOW_TODO_KEY, showTodo); }, [showTodo]);
 
   const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
 
@@ -986,6 +1084,17 @@ function App() {
     setEditing(null);
   };
 
+  const addTask = (projectId, text) => {
+    setTasks(prev => [...prev, { id: Date.now().toString(), projectId, text, completedDate: null }]);
+  };
+  const toggleTask = id => {
+    setTasks(prev => prev.map(t => t.id === id
+      ? { ...t, completedDate: t.completedDate === null ? selectedDay : null }
+      : t
+    ));
+  };
+  const deleteTask = id => setTasks(prev => prev.filter(t => t.id !== id));
+
   const backupData = () => {
     const blob = new Blob(
       [JSON.stringify({ projects, entries, timelineRange }, null, 2)],
@@ -1025,10 +1134,8 @@ function App() {
       const ok = await verifyPermission(pendingHandle);
       if (ok) {
         const raw = await readDataFile(pendingHandle) || readLocalStorage();
-        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
-        setProjects(ps);
-        setEntries(es);
-        setTimelineRange(tr);
+        const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
+        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
         setDirHandle(pendingHandle);
         setPendingHandle(null);
         initialized.current = true;
@@ -1050,12 +1157,10 @@ function App() {
       const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn });
       await storeHandle(handle);
       const raw = await readDataFile(handle) || readLocalStorage();
-      const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
-      await writeDataFile(handle, { projects: ps, entries: es, timelineRange: tr });
+      const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
+      await writeDataFile(handle, { projects: ps, entries: es, tasks: ts, timelineRange: tr });
       clearLocalStorage();
-      setProjects(ps);
-      setEntries(es);
-      setTimelineRange(tr);
+      setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
       setDirHandle(handle);
       setPendingHandle(null);
       initialized.current = true;
@@ -1321,18 +1426,39 @@ function App() {
               }}>Today</button>
             </div>
 
-            {/* Day timeline */}
-            <div style={{ marginBottom: 16 }}>
-              <DayTimeline
-                dayEntries={dayEntries}
-                projects={projects}
-                pending={pending}
-                onDragComplete={handleDragComplete}
-                onEntryDelete={deleteEntry}
-                onEntryEdit={openEdit}
-                range={timelineRange}
-                setRange={setTimelineRange}
-              />
+            {/* Day timeline + To-do panel */}
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 16 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <DayTimeline
+                  dayEntries={dayEntries}
+                  projects={projects}
+                  pending={pending}
+                  onDragComplete={handleDragComplete}
+                  onEntryDelete={deleteEntry}
+                  onEntryEdit={openEdit}
+                  range={timelineRange}
+                  setRange={setTimelineRange}
+                />
+              </div>
+              {showTodo ? (
+                <div style={{ width: 252, flexShrink: 0 }}>
+                  <TodoPanel
+                    projects={projects}
+                    tasks={tasks}
+                    selectedDay={selectedDay}
+                    projMap={projMap}
+                    onAdd={addTask}
+                    onToggle={toggleTask}
+                    onDelete={deleteTask}
+                    onClose={() => setShowTodo(false)}
+                  />
+                </div>
+              ) : (
+                <button onClick={() => setShowTodo(true)} style={{
+                  ...s.btnGhost, writingMode: "vertical-rl", letterSpacing: "0.08em",
+                  fontSize: 10, color: "#9ca3af", padding: "10px 6px", alignSelf: "flex-start"
+                }}>TO DO ▾</button>
+              )}
             </div>
 
             {projects.filter(p => p.billable !== false).length === 0 && (
