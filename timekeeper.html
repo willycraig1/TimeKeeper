@@ -69,6 +69,12 @@ const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tas
 const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_aia", "_ce"];
 const SHOW_TODO_KEY = "tk_show_todo_v1";
 
+const byProjectCode = (a, b) => {
+  const an = parseFloat(a.code), bn = parseFloat(b.code);
+  const aNum = isNaN(an) ? Infinity : an, bNum = isNaN(bn) ? Infinity : bn;
+  return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
+};
+
 // Day timeline (vertical, daytimer-style)
 // Default visible range is 7am–7pm; user can extend either end to midnight.
 const DEFAULT_START_HOUR = 7;
@@ -303,18 +309,12 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
   }, [open]);
 
   const selected = projects.find(p => p.id === value);
-  const OVERHEAD_PICK_ORDER = ["_office", "_marketing", "_aia", "_ce"];
-  const overheadProjects = OVERHEAD_PICK_ORDER
+  const overheadProjects = OVERHEAD_PANEL_ORDER
     .map(id => projects.find(p => p.id === id && !p.archived))
     .filter(Boolean);
   const billableProjects = projects
     .filter(p => p.billable !== false && !p.archived)
-    .sort((a, b) => {
-      const an = parseFloat(a.code), bn = parseFloat(b.code);
-      const aNum = isNaN(an) ? Infinity : an;
-      const bNum = isNaN(bn) ? Infinity : bn;
-      return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
-    });
+    .sort(byProjectCode);
   const offsheetProjects = projects.filter(p => p.billable === false && !p.overhead && !p.archived);
 
   return (
@@ -491,7 +491,6 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
           )}
         </div>
       </div>
-      {/* Progress bar */}
       <div style={{ paddingLeft: 56, marginBottom: 10 }}>
         <div style={{ height: 4, borderRadius: 2, background: "#e5e7eb", overflow: "hidden", position: "relative" }}>
           <div style={{
@@ -595,7 +594,7 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
             if (!proj) return null;
             const top = ((entry.startMinutes - effStart * 60) / 60) * HOUR_PX;
             const height = entry.hours * HOUR_PX;
-            const isNB = proj.billable === false;
+            const isNB = proj.billable === false && !proj.overhead;
             const endMin = entry.startMinutes + hoursToMin(entry.hours);
             // Tier the layout density to the block height.
             const showTimeRow = height >= 32;   // 30 min and up
@@ -614,7 +613,6 @@ function DayTimeline({ dayEntries, projects, pending, onDragComplete, onEntryDel
                 cursor: "default",
               }} onMouseDown={e => e.stopPropagation()}
                  onDoubleClick={() => onEntryEdit(entry)}>
-                {/* Custom dashed stripe for non-billable / overhead entries */}
                 {isNB && (
                   <div style={{
                     position: "absolute", left: 0, top: 0, bottom: 0, width: 6,
@@ -852,16 +850,12 @@ function ReconnectScreen({ folderName, onReconnect, onPickNew }) {
 
 // ----- TodoPanel -----------------------------------------------------------
 
-function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onDelete, onClose }) {
-  const [inputs, setInputs] = React.useState({});
+function TodoPanel({ projects, tasks, selectedDay, onAdd, onToggle, onDelete, onClose }) {
+  const [inputs, setInputs] = useState({});
 
   const billableProjs = projects
     .filter(p => p.billable !== false && !p.archived)
-    .sort((a, b) => {
-      const an = parseFloat(a.code), bn = parseFloat(b.code);
-      const aNum = isNaN(an) ? Infinity : an, bNum = isNaN(bn) ? Infinity : bn;
-      return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
-    });
+    .sort(byProjectCode);
   const overheadProjs = OVERHEAD_PANEL_ORDER.map(id => projects.find(p => p.id === id && !p.archived)).filter(Boolean);
   const nbProj = projects.find(p => p.id === NONBILLABLE_ID && !p.archived);
   const sections = [...billableProjs, ...overheadProjs, ...(nbProj ? [nbProj] : [])];
@@ -878,7 +872,6 @@ function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onD
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingBottom: 4 }}>
         <span style={{ fontSize: 10, fontWeight: 600, color: "#9ca3af", letterSpacing: "0.09em" }}>TO DO</span>
         <button onClick={onClose} style={{
@@ -887,18 +880,16 @@ function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onD
         }}>▶</button>
       </div>
 
-      {/* Project sections */}
       {sections.map(proj => {
-        const isNB = proj.billable === false;
+        const isNB = proj.billable === false && !proj.overhead;
         const projTasks = visibleTasks.filter(t => t.projectId === proj.id);
         return (
           <div key={proj.id} style={{ ...s.card, padding: "8px 10px" }}>
-            {/* Section heading */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
               <div style={{
-                width: 8, height: 8, borderRadius: "50%", background: proj.color, flexShrink: 0,
-                outline: isNB ? `1.5px dashed ${proj.color}` : "none", outlineOffset: 1,
+                width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
                 background: isNB ? "transparent" : proj.color,
+                outline: isNB ? `1.5px dashed ${proj.color}` : "none", outlineOffset: 1,
               }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {proj.name}
@@ -906,7 +897,6 @@ function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onD
               {proj.code && <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace", flexShrink: 0 }}>{proj.code}</span>}
             </div>
 
-            {/* Tasks */}
             {projTasks.map(task => {
               const done = task.completedDate !== null;
               return (
@@ -924,7 +914,6 @@ function TodoPanel({ projects, tasks, selectedDay, projMap, onAdd, onToggle, onD
               );
             })}
 
-            {/* Add task input */}
             <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 2, marginTop: projTasks.length ? 4 : 0 }}>
               <span style={{ fontSize: 12, color: "#d1d5db", flexShrink: 0, userSelect: "none" }}>+</span>
               <input
@@ -1208,15 +1197,25 @@ function App() {
   };
 
   const thisMonth = selectedDay.slice(0, 7);
-  const mAll = entries.filter(e => e.date.startsWith(thisMonth));
-  const billableHours = mAll.filter(e => projMap[e.projectId]?.billable !== false).reduce((s, e) => s + e.hours, 0);
-  const nonBillableHours = mAll.filter(e => projMap[e.projectId]?.billable === false).reduce((s, e) => s + e.hours, 0);
+  const { billableHours, nonBillableHours } = useMemo(() => {
+    const mAll = entries.filter(e => e.date.startsWith(thisMonth));
+    return {
+      billableHours: mAll.filter(e => projMap[e.projectId]?.billable !== false).reduce((s, e) => s + e.hours, 0),
+      nonBillableHours: mAll.filter(e => projMap[e.projectId]?.billable === false).reduce((s, e) => s + e.hours, 0),
+    };
+  }, [entries, projMap, thisMonth]);
 
-  const visibleEntries = entries.filter(e => e.date.startsWith(filterMonth));
-  const grouped = visibleEntries.reduce((acc, e) => { (acc[e.date] = acc[e.date] || []).push(e); return acc; }, {});
-  const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
-  const availableMonths = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
-  if (!availableMonths.includes(thisMonth)) availableMonths.unshift(thisMonth);
+  const { grouped, sortedDates } = useMemo(() => {
+    const vis = entries.filter(e => e.date.startsWith(filterMonth));
+    const g = vis.reduce((acc, e) => { (acc[e.date] = acc[e.date] || []).push(e); return acc; }, {});
+    return { grouped: g, sortedDates: Object.keys(g).sort((a, b) => b.localeCompare(a)) };
+  }, [entries, filterMonth]);
+
+  const availableMonths = useMemo(() => {
+    const months = [...new Set(entries.map(e => e.date.slice(0, 7)))].sort((a, b) => b.localeCompare(a));
+    if (!months.includes(thisMonth)) months.unshift(thisMonth);
+    return months;
+  }, [entries, thisMonth]);
 
   // ---- Monthly Excel export — one tab per week + Descriptions tab -----------
   const exportMonthly = () => {
@@ -1446,7 +1445,6 @@ function App() {
                     projects={projects}
                     tasks={tasks}
                     selectedDay={selectedDay}
-                    projMap={projMap}
                     onAdd={addTask}
                     onToggle={toggleTask}
                     onDelete={deleteTask}
