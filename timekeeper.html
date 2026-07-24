@@ -60,19 +60,41 @@ const OVERHEAD_DEFAULTS = [
   { id: "_marketing", name: "Marketing",             code: "", color: "#f97316", billable: false, overhead: true },
   { id: "_office",    name: "Office",                code: "", color: "#64748b", billable: false, overhead: true },
 ];
+// Vacation/Holiday: paid time off, not "hours worked" — kept separate from OVERHEAD_DEFAULTS
+// so they don't land in the main overhead block of the weekly sheet, only in their own footer rows.
+const PAYROLL_DEFAULTS = [
+  { id: "_vacation", name: "Vacation", code: "", color: "#0ea5e9", billable: false, overhead: true, payroll: true },
+  { id: "_holiday",  name: "Holiday",  code: "", color: "#f43f5e", billable: false, overhead: true, payroll: true },
+];
 // Short badge text shown in pickers and entry blocks for overhead projects
-const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OFF" };
+const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OFF", _vacation: "VAC", _holiday: "HOL" };
 // Excel timesheet row labels match the firm's template (Office → "Overhead")
 const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _office: "Overhead" };
+// Vacation/Holiday map onto the template's existing "Vacation hours" / "Holiday" footer lines
+const PAYROLL_EXCEL_LABEL = { _vacation: "Vacation hours", _holiday: "Holiday" };
 
 const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tasks: "tk_tasks_v1" };
 const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_aia", "_ce"];
+const PAYROLL_PANEL_ORDER = ["_vacation", "_holiday"];
 const SHOW_TODO_KEY = "tk_show_todo_v1";
+// Marketing/Office carry real narrative work worth writing up; CE/AIA are just hours, no description needed.
+const DESCRIBABLE_OVERHEAD_IDS = ["_marketing", "_office"];
+const isDescribable = p => p.billable !== false || DESCRIBABLE_OVERHEAD_IDS.includes(p.id);
 
 const byProjectCode = (a, b) => {
   const an = parseFloat(a.code), bn = parseFloat(b.code);
   const aNum = isNaN(an) ? Infinity : an, bNum = isNaN(bn) ? Infinity : bn;
   return aNum !== bNum ? aNum - bNum : (a.code || "").localeCompare(b.code || "");
+};
+
+// Standard display order everywhere a full project list is shown:
+// billable projects lowest job# → highest, then overhead, then vacation/holiday, then non-billable.
+const orderProjectsForDisplay = projs => {
+  const billable = projs.filter(p => p.billable !== false && !p.archived).sort(byProjectCode);
+  const overhead = OVERHEAD_PANEL_ORDER.map(id => projs.find(p => p.id === id && !p.archived)).filter(Boolean);
+  const payroll = PAYROLL_PANEL_ORDER.map(id => projs.find(p => p.id === id && !p.archived)).filter(Boolean);
+  const nb = projs.find(p => p.id === NONBILLABLE_ID && !p.archived);
+  return [...billable, ...overhead, ...payroll, ...(nb ? [nb] : [])];
 };
 
 // Day timeline (vertical, daytimer-style)
@@ -253,7 +275,7 @@ const readLocalStorage = () => {
     const rawP = localStorage.getItem(STORAGE_KEYS.projects);
     let projects = rawP ? JSON.parse(rawP) : [];
     if (!projects.some(p => p.id === NONBILLABLE_ID)) projects.push(NONBILLABLE_DEFAULT);
-    for (const def of OVERHEAD_DEFAULTS) {
+    for (const def of [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS]) {
       if (!projects.some(p => p.id === def.id)) projects.push(def);
     }
     const rawEntries = JSON.parse(localStorage.getItem(STORAGE_KEYS.entries) || "[]");
@@ -269,7 +291,7 @@ const readLocalStorage = () => {
     const tasks = JSON.parse(localStorage.getItem(STORAGE_KEYS.tasks) || "[]");
     return { projects, entries, timelineRange, tasks };
   } catch {
-    return { projects: [...OVERHEAD_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {}, tasks: [] };
+    return { projects: [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {}, tasks: [] };
   }
 };
 
@@ -281,7 +303,7 @@ const clearLocalStorage = () => {
 const processLoadedData = data => {
   let { projects = [], entries = [], timelineRange = {} } = data;
   if (!projects.some(p => p.id === NONBILLABLE_ID)) projects = [...projects, NONBILLABLE_DEFAULT];
-  for (const def of OVERHEAD_DEFAULTS) {
+  for (const def of [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS]) {
     if (!projects.some(p => p.id === def.id)) projects = [...projects, def];
   }
   const dayCursor = {};
@@ -309,7 +331,7 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
   }, [open]);
 
   const selected = projects.find(p => p.id === value);
-  const overheadProjects = OVERHEAD_PANEL_ORDER
+  const overheadProjects = [...OVERHEAD_PANEL_ORDER, ...PAYROLL_PANEL_ORDER]
     .map(id => projects.find(p => p.id === id && !p.archived))
     .filter(Boolean);
   const billableProjects = projects
@@ -348,7 +370,7 @@ function ProjectPicker({ projects, value, onChange, placeholder = "— select pr
         }}>
           {overheadProjects.length > 0 && (
             <>
-              <div style={{ padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>OVERHEAD</div>
+              <div style={{ padding: "3px 12px", fontSize: 10, color: "#9ca3af", letterSpacing: "0.05em" }}>OVERHEAD / TIME OFF</div>
               {overheadProjects.map(p => (
                 <ProjectOption key={p.id} project={p} onSelect={() => { onChange(p.id); setOpen(false); }} />
               ))}
@@ -853,12 +875,7 @@ function ReconnectScreen({ folderName, onReconnect, onPickNew }) {
 function TodoPanel({ projects, tasks, selectedDay, onAdd, onToggle, onDelete, onClose }) {
   const [inputs, setInputs] = useState({});
 
-  const billableProjs = projects
-    .filter(p => p.billable !== false && !p.archived)
-    .sort(byProjectCode);
-  const overheadProjs = OVERHEAD_PANEL_ORDER.map(id => projects.find(p => p.id === id && !p.archived)).filter(Boolean);
-  const nbProj = projects.find(p => p.id === NONBILLABLE_ID && !p.archived);
-  const sections = [...billableProjs, ...overheadProjs, ...(nbProj ? [nbProj] : [])];
+  const sections = orderProjectsForDisplay(projects);
 
   const visibleTasks = tasks.filter(t => t.completedDate === null || t.completedDate === selectedDay);
 
@@ -966,6 +983,27 @@ function App() {
   const [timelineRange, setTimelineRange] = useState({});
   const [tasks, setTasks] = useState([]);
   const [showTodo, setShowTodo] = useState(() => localStorage.getItem(SHOW_TODO_KEY) !== "false");
+
+  const [copiedKey, setCopiedKey] = useState(null);
+  const copyTextRef = useRef(null);
+  const flashCopied = key => {
+    setCopiedKey(key);
+    clearTimeout(copyTextRef.current);
+    copyTextRef.current = setTimeout(() => setCopiedKey(null), 1500);
+  };
+  const copyText = (key, text) => {
+    navigator.clipboard.writeText(text).then(() => flashCopied(key), () => {
+      // Clipboard API blocked (permissions policy, older browser) — fall back to execCommand.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); flashCopied(key); } catch {}
+      document.body.removeChild(ta);
+    });
+  };
 
   const initialized = useRef(false);
   const restoreInputRef = useRef(null);
@@ -1191,24 +1229,25 @@ function App() {
   const restoreProject = id => setProjects(p => p.map(x => x.id === id ? { ...x, archived: false } : x));
 
   const deleteProject = id => {
-    if (id === NONBILLABLE_ID || OVERHEAD_DEFAULTS.some(d => d.id === id)) return;
+    if (id === NONBILLABLE_ID || [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS].some(d => d.id === id)) return;
     setProjects(p => p.filter(x => x.id !== id));
     setEntries(p => p.filter(e => e.projectId !== id));
   };
 
   const thisMonth = selectedDay.slice(0, 7);
-  const { billableHours, nonBillableHours } = useMemo(() => {
+  const { mAll, billableHours, nonBillableHours } = useMemo(() => {
     const mAll = entries.filter(e => e.date.startsWith(thisMonth));
     return {
+      mAll,
       billableHours: mAll.filter(e => projMap[e.projectId]?.billable !== false).reduce((s, e) => s + e.hours, 0),
       nonBillableHours: mAll.filter(e => projMap[e.projectId]?.billable === false).reduce((s, e) => s + e.hours, 0),
     };
   }, [entries, projMap, thisMonth]);
 
-  const { grouped, sortedDates } = useMemo(() => {
+  const { visibleEntries, grouped, sortedDates } = useMemo(() => {
     const vis = entries.filter(e => e.date.startsWith(filterMonth));
     const g = vis.reduce((acc, e) => { (acc[e.date] = acc[e.date] || []).push(e); return acc; }, {});
-    return { grouped: g, sortedDates: Object.keys(g).sort((a, b) => b.localeCompare(a)) };
+    return { visibleEntries: vis, grouped: g, sortedDates: Object.keys(g).sort((a, b) => b.localeCompare(a)) };
   }, [entries, filterMonth]);
 
   const availableMonths = useMemo(() => {
@@ -1222,10 +1261,10 @@ function App() {
     const weeks = getWeeksInMonth(xMonth);
     if (!weeks.length) { alert("No weeks found for that month."); return; }
 
-    // Collect all billable entries whose week-ending Sunday falls in this month
+    // Collect all describable entries (billable + Marketing/Office) whose week-ending Sunday falls in this month
     const billMonthEntries = entries.filter(e => {
       const p = projMap[e.projectId];
-      if (!p || p.billable === false || p.archived) return false;
+      if (!p || !isDescribable(p) || p.archived) return false;
       return weeks.some(w => e.date >= w.mon && e.date <= w.sun);
     });
     if (!billMonthEntries.length) { alert("No billable entries for that month."); return; }
@@ -1238,8 +1277,10 @@ function App() {
       const dates = weekDatesFrom(mon);
       const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
       const billWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && p.billable !== false && !p.archived; });
-      const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && !p.archived && (p.billable !== false || p.overhead === true); });
-      const billProjects = projects.filter(p => p.billable !== false && !p.archived && billWk.some(e => e.projectId === p.id));
+      const workWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && !p.archived && !p.payroll && (p.billable !== false || p.overhead === true); });
+      const billProjects = projects
+        .filter(p => p.billable !== false && !p.archived && billWk.some(e => e.projectId === p.id))
+        .sort(byProjectCode);
 
       const projDayHrs = (projId, date) =>
         allWk.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
@@ -1249,6 +1290,12 @@ function App() {
       const dayTotals = dates.map(d => workWk.filter(e => e.date === d).reduce((s, e) => s + e.hours, 0));
       const totalAll  = +workWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
       const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
+
+      const vacDh = dates.map(d => projDayHrs("_vacation", d) || E);
+      const holDh = dates.map(d => projDayHrs("_holiday", d) || E);
+      const vacTotal = projTotal("_vacation");
+      const holTotal = projTotal("_holiday");
+      const totalToBePaid = +(totalAll + vacTotal + holTotal).toFixed(2);
 
       const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
         { month: "long", day: "numeric", year: "numeric" });
@@ -1272,10 +1319,10 @@ function App() {
         }),
         ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
         ["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)],
-        ["Tolls:",         E, E, "Vacation hours",            ...blank(9)],
+        ["Tolls:",         E, E, "Vacation hours",            ...vacDh, vacTotal || E, E],
         ["Reimbursables:", E, E, "Sick time",                 ...blank(9)],
-        [E,                E, E, "Holiday",                   ...blank(9)],
-        ["TOTAL HOURS TO BE PAID", ...blank(10), totalAll, E],
+        [E,                E, E, "Holiday",                   ...holDh, holTotal || E, E],
+        ["TOTAL HOURS TO BE PAID", ...blank(10), totalToBePaid, E],
         [`NAME:   WILLIAM CRAIG`, ...blank(12)],
         [`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"],
       ];
@@ -1297,9 +1344,9 @@ function App() {
         return fmtDate(d);
       };
 
-      const used = projects.filter(p =>
-        p.billable !== false && !p.archived && billMonthEntries.some(e => e.projectId === p.id)
-      );
+      const used = projects
+        .filter(p => isDescribable(p) && !p.archived && billMonthEntries.some(e => e.projectId === p.id))
+        .sort(byProjectCode);
 
       const aoa = [];
       used.forEach((proj, idx) => {
@@ -1603,7 +1650,7 @@ function App() {
             )}
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {projects.filter(p => !p.archived).map(proj => {
+              {orderProjectsForDisplay(projects).map(proj => {
                 const pe = entries.filter(e => e.projectId === proj.id);
                 const hrs = pe.reduce((s, e) => s + e.hours, 0);
                 const isNB = proj.billable === false;
@@ -1673,7 +1720,11 @@ function App() {
                         fontSize: 11, color: "#9ca3af", fontFamily: "monospace", marginLeft: 8,
                         background: "#f3f4f6", padding: "1px 6px", borderRadius: 3
                       }}>{proj.code}</span>}
-                      {proj.overhead && <span style={{
+                      {proj.payroll && <span style={{
+                        fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
+                        padding: "1px 6px", borderRadius: 3
+                      }}>time off · in weekly timesheet, not hours worked</span>}
+                      {proj.overhead && !proj.payroll && <span style={{
                         fontSize: 10, color: "#6b7280", background: "#f1f5f9", marginLeft: 8,
                         padding: "1px 6px", borderRadius: 3
                       }}>overhead · in weekly timesheet</span>}
@@ -1782,31 +1833,32 @@ function App() {
             const weekEntries = entries.filter(e => e.date >= previewMon && e.date <= previewSun);
             const billProjects = projects.filter(p =>
               p.billable !== false && !p.archived && weekEntries.some(e => e.projectId === p.id)
-            );
+            ).sort(byProjectCode);
             const overheadProjs = OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived);
+            const payrollProjs = PAYROLL_DEFAULTS.filter(p => !projMap[p.id]?.archived);
             const projDayHrs = (projId, date) =>
               weekEntries.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
             const projWeekTotal = projId =>
               +previewDates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
             const dayWorkedHrs = date =>
-              weekEntries.filter(e => e.date === date && projMap[e.projectId] &&
+              weekEntries.filter(e => e.date === date && projMap[e.projectId] && !projMap[e.projectId].payroll &&
                 (projMap[e.projectId].billable !== false || projMap[e.projectId].overhead === true))
                 .reduce((s, e) => s + e.hours, 0);
             const weekWorkedTotal = +weekEntries.filter(e => {
               const p = projMap[e.projectId];
-              return p && !p.archived && (p.billable !== false || p.overhead === true);
+              return p && !p.archived && !p.payroll && (p.billable !== false || p.overhead === true);
             }).reduce((s, e) => s + e.hours, 0).toFixed(2);
 
             // Month descriptions data
             const monthWeeks = getWeeksInMonth(previewYM);
             const monthBillEntries = entries.filter(e => {
               const p = projMap[e.projectId];
-              if (!p || p.billable === false || p.archived) return false;
+              if (!p || !isDescribable(p) || p.archived) return false;
               return monthWeeks.some(w => e.date >= w.mon && e.date <= w.sun);
             });
             const usedProjects = projects.filter(p =>
-              p.billable !== false && !p.archived && monthBillEntries.some(e => e.projectId === p.id)
-            );
+              isDescribable(p) && !p.archived && monthBillEntries.some(e => e.projectId === p.id)
+            ).sort(byProjectCode);
             const weekEndingSunday = d => {
               const dt = new Date(d + "T12:00:00"), dow = dt.getDay();
               dt.setDate(dt.getDate() + (dow === 0 ? 0 : 7 - dow));
@@ -1875,6 +1927,22 @@ function App() {
                           </tr>
                         );
                       })}
+                      {payrollProjs.length > 0 && (
+                        <tr><td colSpan={9} style={{ padding: "2px 0" }}><div style={{ borderTop: "1px dashed #e5e7eb" }} /></td></tr>
+                      )}
+                      {payrollProjs.map(p => {
+                        const t = projWeekTotal(p.id);
+                        return (
+                          <tr key={p.id}>
+                            <td style={{ padding: "3px 8px 3px 0", color: "#9ca3af", fontSize: 11 }}>{p.name} (not worked)</td>
+                            {previewDates.map(d => {
+                              const h = projDayHrs(p.id, d);
+                              return <td key={d} style={numCell(h, true)}>{h > 0 ? fmtHrs(h) : "—"}</td>;
+                            })}
+                            <td style={numCell(t, true)}>{t > 0 ? fmtHrs(t) : "—"}</td>
+                          </tr>
+                        );
+                      })}
                       <tr>
                         <td style={{ padding: "4px 8px 4px 0", color: "#374151", fontWeight: 600, fontSize: 12, borderTop: "1px solid #e5e7eb" }}>TOTAL HOURS WORKED</td>
                         {previewDates.map(d => {
@@ -1888,8 +1956,25 @@ function App() {
                 </div>
 
                 {/* ── Month descriptions ── */}
-                <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 10, paddingTop: 14, borderTop: "1px solid #f3f4f6" }}>
-                  DESCRIPTIONS PREVIEW &nbsp;·&nbsp; {new Date(previewYM + "-15").toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, paddingTop: 14, borderTop: "1px solid #f3f4f6" }}>
+                  <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em" }}>
+                    DESCRIPTIONS PREVIEW &nbsp;·&nbsp; {new Date(previewYM + "-15").toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+                  </div>
+                  {usedProjects.length > 0 && (
+                    <button onClick={() => {
+                      const all = usedProjects.map(proj => {
+                        const pe = monthBillEntries.filter(e => e.projectId === proj.id)
+                          .sort((a, b) => a.date.localeCompare(b.date));
+                        const header = proj.name + (proj.code ? `  |  Job #: ${proj.code}` : "");
+                        const lines = pe.filter(e => e.note).map(e => e.note).join("\n");
+                        return `${header}\n${lines}`;
+                      }).join("\n\n");
+                      copyText("all", all);
+                    }} style={{
+                      background: "none", border: "1px solid #e5e7eb", borderRadius: 5, cursor: "pointer",
+                      fontSize: 11, color: copiedKey === "all" ? "#16a34a" : "#6b7280", padding: "3px 10px"
+                    }}>{copiedKey === "all" ? "Copied!" : "Copy all"}</button>
+                  )}
                 </div>
                 {usedProjects.length === 0 ? (
                   <div style={{ color: "#9ca3af", fontSize: 12, fontStyle: "italic" }}>No billable entries this month.</div>
@@ -1905,7 +1990,14 @@ function App() {
                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
                             <div style={{ width: 8, height: 8, borderRadius: "50%", background: proj.color, flexShrink: 0 }} />
                             {proj.code && <span style={{ fontSize: 11, color: "#9ca3af", fontFamily: "monospace", background: "#f3f4f6", padding: "1px 6px", borderRadius: 3 }}>{proj.code}</span>}
-                            <span style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{proj.name}</span>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: "#111827", flex: 1 }}>{proj.name}</span>
+                            <button onClick={() => {
+                              const lines = pe.filter(e => e.note).map(e => e.note).join("\n");
+                              copyText(proj.id, lines);
+                            }} title={copiedKey === proj.id ? "Copied!" : "Copy descriptions"} style={{
+                              background: "none", border: "1px solid #e5e7eb", borderRadius: 5, cursor: "pointer",
+                              fontSize: 11, lineHeight: 1, color: copiedKey === proj.id ? "#16a34a" : "#9ca3af", padding: "3px 7px"
+                            }}>{copiedKey === proj.id ? "✓" : "⧉"}</button>
                           </div>
                           <div style={{ display: "flex", flexDirection: "column", gap: 3, paddingLeft: 16 }}>
                             {Object.keys(weekMap).sort().map(wk => (
