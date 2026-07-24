@@ -875,7 +875,7 @@ function ReconnectScreen({ folderName, onReconnect, onPickNew }) {
 function TodoPanel({ projects, tasks, selectedDay, onAdd, onToggle, onDelete, onClose }) {
   const [inputs, setInputs] = useState({});
 
-  const sections = orderProjectsForDisplay(projects);
+  const sections = orderProjectsForDisplay(projects).filter(p => !p.payroll);
 
   const visibleTasks = tasks.filter(t => t.completedDate === null || t.completedDate === selectedDay);
 
