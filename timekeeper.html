@@ -1402,7 +1402,7 @@ function App() {
         addRow(["week ending", "Descriptions"], { bold: true, underline: true });
 
         const pe = billMonthEntries.filter(e => e.projectId === proj.id)
-          .sort((a, b) => a.date.localeCompare(b.date));
+          .sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
 
         const weekMap = {};
         pe.forEach(e => {
@@ -2013,7 +2013,7 @@ function App() {
                     <button onClick={() => {
                       const all = usedProjects.map(proj => {
                         const pe = monthBillEntries.filter(e => e.projectId === proj.id)
-                          .sort((a, b) => a.date.localeCompare(b.date));
+                          .sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
                         const header = proj.name + (proj.code ? `  |  Job #: ${proj.code}` : "");
                         const lines = pe.filter(e => e.note).map(e => e.note).join("\n");
                         return `${header}\n${lines}`;
@@ -2031,7 +2031,7 @@ function App() {
                   <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                     {usedProjects.map(proj => {
                       const pe = monthBillEntries.filter(e => e.projectId === proj.id)
-                        .sort((a, b) => a.date.localeCompare(b.date));
+                        .sort((a, b) => a.date.localeCompare(b.date) || a.startMinutes - b.startMinutes);
                       const weekMap = {};
                       pe.forEach(e => { const wk = weekEndingSunday(e.date); (weekMap[wk] = weekMap[wk] || []).push(e); });
                       return (
