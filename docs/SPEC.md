@@ -19,7 +19,7 @@ Time Keeper/
 ## Architecture
 
 - Single self-contained HTML file.
-- Loads React 18 (UMD), ReactDOM 18, Babel-standalone, and SheetJS from cdnjs at runtime. JSX is transpiled in-browser via Babel.
+- Loads React 18 (UMD), ReactDOM 18, Babel-standalone, and ExcelJS from cdnjs at runtime. JSX is transpiled in-browser via Babel. ExcelJS (not SheetJS) was chosen because it supports writing cell styles (fonts, borders, fills) for free — SheetJS's community edition only supports that on the paid Pro tier.
 - All state lives in React. Persistence goes through a thin storage layer (currently `localStorage`).
 - No build step. No server. Open the file in a Chromium-based browser.
 
