@@ -9,12 +9,12 @@
   Storage: localStorage (TEMPORARY).
     TODO: Replace with File System Access API + append-only audit log
     once office Excel/Word format specs are finalized.
-  Scripts loaded from cdnjs (React, Babel, SheetJS).
+  Scripts loaded from cdnjs (React, Babel, ExcelJS).
 -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   body { margin: 0; }
   input[type=number]::-webkit-outer-spin-button,
@@ -1257,7 +1257,16 @@ function App() {
   }, [entries, thisMonth]);
 
   // ---- Monthly Excel export — one tab per week + Descriptions tab -----------
-  const exportMonthly = () => {
+  // Styling matches the firm's real template (EXAMPLE_TIME SHEET April 26.xls):
+  // ZapfHumnst BT throughout, 14pt bold firm name, 10pt bold+underline "WEEKLY TIME SHEET",
+  // 11pt body, 12pt bold + thick top/bottom border on the two TOTAL rows, medium border
+  // under the column headers, thin grid lines elsewhere.
+  const XLSX_FONT = "ZapfHumnst BT";
+  const XLSX_BORDER_THIN = { style: "thin" };
+  const XLSX_BORDER_MEDIUM = { style: "medium" };
+  const XLSX_BORDER_THICK = { style: "thick" };
+
+  const exportMonthly = async () => {
     const weeks = getWeeksInMonth(xMonth);
     if (!weeks.length) { alert("No weeks found for that month."); return; }
 
@@ -1273,7 +1282,7 @@ function App() {
     const shortDate = s => new Date(s + "T12:00:00")
       .toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-    const buildWeekSheet = ({ mon, sun }) => {
+    const buildWeekSheet = (wb, { mon, sun }) => {
       const dates = weekDatesFrom(mon);
       const allWk = entries.filter(e => e.date >= mon && e.date <= sun);
       const billWk = allWk.filter(e => { const p = projMap[e.projectId]; return p && p.billable !== false && !p.archived; });
@@ -1300,43 +1309,70 @@ function App() {
       const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
         { month: "long", day: "numeric", year: "numeric" });
 
-      const aoa = [
-        ["SEIBERT ARCHITECTS, P.A.", ...blank(9), "WEEKLY TIME SHEET", E, E],
-        ["CONTRACTED SERVICES / CHANGE IN SERVICE     SERVICES: 2.1  -  2.3 -  2.4 (Tasks: SD,DD,CD)   2.5 -   2.6 - 2.8", ...blank(12)],
-        ["OH - Overhead", ...blank(12)],
-        [...blank(13)],
-        ["Project / Client Name", "Job #", "Services", "Tasks", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "TOTAL", "Billable hours *"],
-        ...billProjects.map(proj => {
-          const dh = dates.map(d => projDayHrs(proj.id, d) || E);
-          const tot = projTotal(proj.id);
-          return [proj.name, proj.code || E, proj.serviceCode || E, proj.taskCode || E, ...dh, tot, tot];
-        }),
-        [E, E, E, E, ...blank(7), 0, 0],
-        ...OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived).map(oh => {
-          const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
-          const tot = projTotal(oh.id);
-          return [OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E];
-        }),
-        ["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
-        ["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)],
-        ["Tolls:",         E, E, "Vacation hours",            ...vacDh, vacTotal || E, E],
-        ["Reimbursables:", E, E, "Sick time",                 ...blank(9)],
-        [E,                E, E, "Holiday",                   ...holDh, holTotal || E, E],
-        ["TOTAL HOURS TO BE PAID", ...blank(10), totalToBePaid, E],
-        [`NAME:   WILLIAM CRAIG`, ...blank(12)],
-        [`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"],
+      const ws = wb.addWorksheet(`Wk ${shortDate(sun)}`);
+      // Widths perturbed by tiny, invisible fractions to dodge an ExcelJS 4.4.0 bug where
+      // a column width of exactly 9, or a run of columns sharing one width, gets silently
+      // dropped from the file (verified against real output, not from memory).
+      ws.columns = [
+        { width: 41 }, { width: 11 }, { width: 9.01 }, { width: 9.02 },
+        { width: 8 }, { width: 8.01 }, { width: 8.02 }, { width: 8.03 }, { width: 8.04 }, { width: 8.05 }, { width: 8.06 },
+        { width: 9.03 }, { width: 8.07 },
       ];
+      ws.views = [{ showGridLines: true }];
 
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws["!cols"] = [
-        { wch: 44 }, { wch: 8 }, { wch: 10 }, { wch: 8 },
-        { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 }, { wch: 5 },
-        { wch: 8 }, { wch: 16 },
-      ];
+      const addRow = (values, rowFont = {}, rowBorder = null) => {
+        const row = ws.addRow(values);
+        row.eachCell({ includeEmpty: true }, cell => {
+          cell.font = { name: XLSX_FONT, size: 11, ...rowFont };
+          if (rowBorder) cell.border = rowBorder;
+        });
+        return row;
+      };
+      const gridBorder = { bottom: XLSX_BORDER_THIN, right: XLSX_BORDER_THIN };
+
+      const r1 = addRow(["SEIBERT ARCHITECTS, P.A.", ...blank(9), "WEEKLY TIME SHEET", E, E], {}, { bottom: XLSX_BORDER_THIN });
+      r1.getCell(1).font = { name: XLSX_FONT, size: 14, bold: true };
+      r1.getCell(11).font = { name: XLSX_FONT, size: 10, bold: true, underline: true };
+
+      addRow(["CONTRACTED SERVICES / CHANGE IN SERVICE     SERVICES: 2.1  -  2.3 -  2.4 (Tasks: SD,DD,CD)   2.5 -   2.6 - 2.8", ...blank(12)], { size: 10, bold: true });
+      addRow(["OH - Overhead", ...blank(12)], { size: 10 });
+      addRow(blank(13));
+
+      addRow(["Project / Client Name", "Job #", "Services", "Tasks", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "TOTAL", "Billable hours *"],
+        {}, { bottom: XLSX_BORDER_MEDIUM, right: XLSX_BORDER_THIN });
+
+      billProjects.forEach(proj => {
+        const dh = dates.map(d => projDayHrs(proj.id, d) || E);
+        const tot = projTotal(proj.id);
+        addRow([proj.name, proj.code || E, proj.serviceCode || E, proj.taskCode || E, ...dh, tot, tot], {}, gridBorder);
+      });
+
+      addRow([E, E, E, E, ...blank(7), 0, 0], {}, gridBorder);
+
+      OVERHEAD_DEFAULTS.filter(oh => !projMap[oh.id]?.archived).forEach(oh => {
+        const dh = dates.map(d => { const h = projDayHrs(oh.id, d); return h ? h : E; });
+        const tot = projTotal(oh.id);
+        addRow([OVERHEAD_EXCEL_LABEL[oh.id], E, E, E, ...dh, tot || 0, E], {}, gridBorder);
+      });
+
+      addRow(["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
+        { size: 12, bold: true }, { top: XLSX_BORDER_THICK, bottom: XLSX_BORDER_THICK });
+
+      addRow(["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)]);
+      addRow(["Tolls:",         E, E, "Vacation hours",            ...vacDh, vacTotal || E, E]);
+      addRow(["Reimbursables:", E, E, "Sick time",                 ...blank(9)]);
+      addRow([E,                E, E, "Holiday",                   ...holDh, holTotal || E, E]);
+
+      addRow(["TOTAL HOURS TO BE PAID", ...blank(10), totalToBePaid, E],
+        { size: 12, bold: true }, { top: XLSX_BORDER_THICK, bottom: XLSX_BORDER_THICK });
+
+      addRow([`NAME:   WILLIAM CRAIG`, ...blank(12)], { bold: true });
+      addRow([`WEEK ENDING: ${weekEnd}`, ...blank(11), "* Project Managers only"], { bold: true });
+
       return ws;
     };
 
-    const buildDescriptionsSheet = () => {
+    const buildDescriptionsSheet = wb => {
       const weekEndingSunday = s => {
         const d = new Date(s + "T12:00:00");
         const day = d.getDay();
@@ -1348,11 +1384,22 @@ function App() {
         .filter(p => isDescribable(p) && !p.archived && billMonthEntries.some(e => e.projectId === p.id))
         .sort(byProjectCode);
 
-      const aoa = [];
+      const ws = wb.addWorksheet("Descriptions");
+      ws.columns = [{ width: 14 }, { width: 90 }];
+
+      const addRow = (values, rowFont = {}) => {
+        const row = ws.addRow(values);
+        row.eachCell({ includeEmpty: true }, cell => {
+          cell.font = { name: XLSX_FONT, size: 11, ...rowFont };
+          cell.alignment = { wrapText: true, vertical: "top" };
+        });
+        return row;
+      };
+
       used.forEach((proj, idx) => {
-        if (idx > 0) aoa.push([E]);
-        aoa.push([proj.name + (proj.code ? `  |  Job #: ${proj.code}` : "")]);
-        aoa.push(["week ending", "Descriptions"]);
+        if (idx > 0) ws.addRow([]);
+        addRow([proj.name + (proj.code ? `  |  Job #: ${proj.code}` : "")], { size: 12, bold: true });
+        addRow(["week ending", "Descriptions"], { bold: true, underline: true });
 
         const pe = billMonthEntries.filter(e => e.projectId === proj.id)
           .sort((a, b) => a.date.localeCompare(b.date));
@@ -1367,26 +1414,28 @@ function App() {
           const lines = weekMap[wk].map(e => {
             return e.note ? `${shortDate(e.date)}: ${e.note}` : null;
           }).filter(Boolean).join("\n");
-          aoa.push([shortDate(wk), lines || "(no notes)"]);
+          addRow([shortDate(wk), lines || "(no notes)"]);
         });
       });
 
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws["!cols"] = [{ wch: 14 }, { wch: 80 }];
       return ws;
     };
 
-    const wb = XLSX.utils.book_new();
+    const wb = new ExcelJS.Workbook();
 
-    weeks.forEach(({ mon, sun }) => {
-      const ws = buildWeekSheet({ mon, sun });
-      const label = shortDate(sun);
-      XLSX.utils.book_append_sheet(wb, ws, `Wk ${label}`);
-    });
+    weeks.forEach(w => buildWeekSheet(wb, w));
+    buildDescriptionsSheet(wb);
 
-    XLSX.utils.book_append_sheet(wb, buildDescriptionsSheet(), "Descriptions");
-
-    XLSX.writeFile(wb, `TimeSheet_${xMonth}.xlsx`);
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `TimeSheet_${xMonth}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   if (status === "loading") return (
