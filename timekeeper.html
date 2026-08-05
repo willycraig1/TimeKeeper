@@ -60,26 +60,36 @@ const OVERHEAD_DEFAULTS = [
   { id: "_marketing", name: "Marketing",             code: "", color: "#f97316", billable: false, overhead: true },
   { id: "_office",    name: "Office",                code: "", color: "#64748b", billable: false, overhead: true },
 ];
-// Vacation/Holiday: paid time off, not "hours worked" — kept separate from OVERHEAD_DEFAULTS
-// so they don't land in the main overhead block of the weekly sheet, only in their own footer rows.
+// Holiday: paid time off, not "hours worked" — kept separate from OVERHEAD_DEFAULTS
+// so it doesn't land in the main overhead block of the weekly sheet, only in its own footer row.
+// Vacation used to live here too, but it's now a plain day-level input (see DAY_EXTRA_FIELDS) —
+// left out of fresh seed data going forward. Existing installs keep whatever _vacation project
+// record they already have on disk (never deleted), so historical entries still resolve and
+// still count in exports; it just won't be re-seeded, offered in pickers, or shown in lists.
 const PAYROLL_DEFAULTS = [
-  { id: "_vacation", name: "Vacation", code: "", color: "#0ea5e9", billable: false, overhead: true, payroll: true },
   { id: "_holiday",  name: "Holiday",  code: "", color: "#f43f5e", billable: false, overhead: true, payroll: true },
 ];
 // Short badge text shown in pickers and entry blocks for overhead projects
 const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OFF", _vacation: "VAC", _holiday: "HOL" };
 // Excel timesheet row labels match the firm's template (Office → "Overhead")
 const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _office: "Overhead" };
-// Vacation/Holiday map onto the template's existing "Vacation hours" / "Holiday" footer lines
-const PAYROLL_EXCEL_LABEL = { _vacation: "Vacation hours", _holiday: "Holiday" };
 
-const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tasks: "tk_tasks_v1" };
+const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tasks: "tk_tasks_v1", dayExtras: "tk_day_extras_v1" };
 const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_aia", "_ce"];
-const PAYROLL_PANEL_ORDER = ["_vacation", "_holiday"];
+const PAYROLL_PANEL_ORDER = ["_holiday"];
 const SHOW_TODO_KEY = "tk_show_todo_v1";
 // Marketing/Office carry real narrative work worth writing up; CE/AIA are just hours, no description needed.
 const DESCRIBABLE_OVERHEAD_IDS = ["_marketing", "_office"];
 const isDescribable = p => p.billable !== false || DESCRIBABLE_OVERHEAD_IDS.includes(p.id);
+
+// Small day-level fields shown at the bottom of the Log tab — office-template footer fields
+// (Mileage, Reimbursables, Sick time) plus Vacation, which moved here from the timeline.
+const DAY_EXTRA_FIELDS = [
+  { key: "mileage",       label: "Mileage",       icon: "🚗", step: "0.1" },
+  { key: "reimbursables", label: "Reimbursables", icon: "🧾", step: "0.01" },
+  { key: "sick",          label: "Sick time (hrs)",    icon: "🤒", step: "0.25" },
+  { key: "vacation",      label: "Vacation (hrs)",     icon: "🌴", step: "0.25" },
+];
 
 const byProjectCode = (a, b) => {
   const an = parseFloat(a.code), bn = parseFloat(b.code);
@@ -289,14 +299,15 @@ const readLocalStorage = () => {
     const rawR = localStorage.getItem(RANGE_STORAGE_KEY);
     const timelineRange = rawR ? JSON.parse(rawR) : {};
     const tasks = JSON.parse(localStorage.getItem(STORAGE_KEYS.tasks) || "[]");
-    return { projects, entries, timelineRange, tasks };
+    const dayExtras = JSON.parse(localStorage.getItem(STORAGE_KEYS.dayExtras) || "{}");
+    return { projects, entries, timelineRange, tasks, dayExtras };
   } catch {
-    return { projects: [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {}, tasks: [] };
+    return { projects: [...OVERHEAD_DEFAULTS, ...PAYROLL_DEFAULTS, NONBILLABLE_DEFAULT], entries: [], timelineRange: {}, tasks: [], dayExtras: {} };
   }
 };
 
 const clearLocalStorage = () => {
-  [STORAGE_KEYS.projects, STORAGE_KEYS.entries, STORAGE_KEYS.tasks, RANGE_STORAGE_KEY].forEach(k => localStorage.removeItem(k));
+  [STORAGE_KEYS.projects, STORAGE_KEYS.entries, STORAGE_KEYS.tasks, STORAGE_KEYS.dayExtras, RANGE_STORAGE_KEY].forEach(k => localStorage.removeItem(k));
 };
 
 // Seed required protected projects and backfill legacy entry fields.
@@ -314,7 +325,8 @@ const processLoadedData = data => {
     return { ...e, startMinutes: cur };
   });
   const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-  return { projects, entries, timelineRange, tasks };
+  const dayExtras = (data.dayExtras && typeof data.dayExtras === "object") ? data.dayExtras : {};
+  return { projects, entries, timelineRange, tasks, dayExtras };
 };
 
 // ----- ProjectPicker -------------------------------------------------------
@@ -982,6 +994,7 @@ function App() {
 
   const [timelineRange, setTimelineRange] = useState({});
   const [tasks, setTasks] = useState([]);
+  const [dayExtras, setDayExtras] = useState({}); // { [date]: { mileage, reimbursables, sick, vacation } }
   const [showTodo, setShowTodo] = useState(() => localStorage.getItem(SHOW_TODO_KEY) !== "false");
 
   const [copiedKey, setCopiedKey] = useState(null);
@@ -1013,8 +1026,8 @@ function App() {
     (async () => {
       if (!FS_SUPPORTED) {
         // localStorage path — works in any browser
-        const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(readLocalStorage());
-        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
+        const { projects: ps, entries: es, timelineRange: tr, tasks: ts, dayExtras: de } = processLoadedData(readLocalStorage());
+        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts); setDayExtras(de);
         initialized.current = true;
         setStatus("ready");
         return;
@@ -1026,8 +1039,8 @@ function App() {
           if (await checkPermissionOnly(handle)) {
             // Permission still active (same browser session) — load immediately.
             const raw = await readDataFile(handle) || readLocalStorage();
-            const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
-            setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
+            const { projects: ps, entries: es, timelineRange: tr, tasks: ts, dayExtras: de } = processLoadedData(raw);
+            setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts); setDayExtras(de);
             setDirHandle(handle);
             initialized.current = true;
             setStatus("ready");
@@ -1056,16 +1069,17 @@ function App() {
         localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(projects));
         localStorage.setItem(STORAGE_KEYS.entries, JSON.stringify(entries));
         localStorage.setItem(STORAGE_KEYS.tasks, JSON.stringify(tasks));
+        localStorage.setItem(STORAGE_KEYS.dayExtras, JSON.stringify(dayExtras));
         localStorage.setItem(RANGE_STORAGE_KEY, JSON.stringify(timelineRange));
       } catch (e) { console.error("Timekeeper localStorage save error:", e); }
       return;
     }
     const id = setTimeout(() => {
-      writeDataFile(dirHandle, { projects, entries, tasks, timelineRange })
+      writeDataFile(dirHandle, { projects, entries, tasks, timelineRange, dayExtras })
         .catch(e => console.error("Timekeeper save error:", e));
     }, 400);
     return () => clearTimeout(id);
-  }, [projects, entries, tasks, timelineRange, dirHandle]);
+  }, [projects, entries, tasks, dayExtras, timelineRange, dirHandle]);
 
   useEffect(() => { localStorage.setItem(SHOW_TODO_KEY, showTodo); }, [showTodo]);
 
@@ -1122,9 +1136,20 @@ function App() {
   };
   const deleteTask = id => setTasks(prev => prev.filter(t => t.id !== id));
 
+  const updateDayExtra = (date, field, raw) => {
+    const val = raw === "" ? undefined : parseFloat(raw);
+    setDayExtras(prev => {
+      const dayVal = { ...(prev[date] || {}) };
+      if (val === undefined || isNaN(val)) delete dayVal[field]; else dayVal[field] = val;
+      const next = { ...prev };
+      if (Object.keys(dayVal).length === 0) delete next[date]; else next[date] = dayVal;
+      return next;
+    });
+  };
+
   const backupData = () => {
     const blob = new Blob(
-      [JSON.stringify({ projects, entries, timelineRange }, null, 2)],
+      [JSON.stringify({ projects, entries, timelineRange, tasks, dayExtras }, null, 2)],
       { type: "application/json" }
     );
     const url = URL.createObjectURL(blob);
@@ -1144,10 +1169,12 @@ function App() {
     reader.onload = evt => {
       try {
         const raw = JSON.parse(evt.target.result);
-        const { projects: ps, entries: es, timelineRange: tr } = processLoadedData(raw);
+        const { projects: ps, entries: es, timelineRange: tr, tasks: ts, dayExtras: de } = processLoadedData(raw);
         setProjects(ps);
         setEntries(es);
         setTimelineRange(tr);
+        setTasks(ts);
+        setDayExtras(de);
       } catch {
         alert("Could not read that file — make sure it's a valid Timekeeper backup.");
       }
@@ -1161,8 +1188,8 @@ function App() {
       const ok = await verifyPermission(pendingHandle);
       if (ok) {
         const raw = await readDataFile(pendingHandle) || readLocalStorage();
-        const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
-        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
+        const { projects: ps, entries: es, timelineRange: tr, tasks: ts, dayExtras: de } = processLoadedData(raw);
+        setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts); setDayExtras(de);
         setDirHandle(pendingHandle);
         setPendingHandle(null);
         initialized.current = true;
@@ -1184,10 +1211,10 @@ function App() {
       const handle = await window.showDirectoryPicker({ mode: "readwrite", startIn });
       await storeHandle(handle);
       const raw = await readDataFile(handle) || readLocalStorage();
-      const { projects: ps, entries: es, timelineRange: tr, tasks: ts } = processLoadedData(raw);
-      await writeDataFile(handle, { projects: ps, entries: es, tasks: ts, timelineRange: tr });
+      const { projects: ps, entries: es, timelineRange: tr, tasks: ts, dayExtras: de } = processLoadedData(raw);
+      await writeDataFile(handle, { projects: ps, entries: es, tasks: ts, timelineRange: tr, dayExtras: de });
       clearLocalStorage();
-      setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts);
+      setProjects(ps); setEntries(es); setTimelineRange(tr); setTasks(ts); setDayExtras(de);
       setDirHandle(handle);
       setPendingHandle(null);
       initialized.current = true;
@@ -1300,11 +1327,18 @@ function App() {
       const totalAll  = +workWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
       const totalBill = +billWk.reduce((s, e) => s + e.hours, 0).toFixed(2);
 
-      const vacDh = dates.map(d => projDayHrs("_vacation", d) || E);
+      // Vacation is a day-level input now, but legacy _vacation time-entries (logged before
+      // that change) still count too, so old data keeps showing correctly in past exports.
+      const vacationForDay = d => projDayHrs("_vacation", d) + (dayExtras[d]?.vacation || 0);
+      const vacDh = dates.map(d => vacationForDay(d) || E);
       const holDh = dates.map(d => projDayHrs("_holiday", d) || E);
-      const vacTotal = projTotal("_vacation");
+      const sickDh = dates.map(d => (dayExtras[d]?.sick || 0) || E);
+      const vacTotal = +dates.reduce((s, d) => s + vacationForDay(d), 0).toFixed(2);
       const holTotal = projTotal("_holiday");
-      const totalToBePaid = +(totalAll + vacTotal + holTotal).toFixed(2);
+      const sickTotal = +dates.reduce((s, d) => s + (dayExtras[d]?.sick || 0), 0).toFixed(2);
+      const mileageTotal = +dates.reduce((s, d) => s + (dayExtras[d]?.mileage || 0), 0).toFixed(2);
+      const reimbTotal = +dates.reduce((s, d) => s + (dayExtras[d]?.reimbursables || 0), 0).toFixed(2);
+      const totalToBePaid = +(totalAll + vacTotal + holTotal + sickTotal).toFixed(2);
 
       const weekEnd = new Date(sun + "T12:00:00").toLocaleDateString("en-US",
         { month: "long", day: "numeric", year: "numeric" });
@@ -1358,9 +1392,9 @@ function App() {
       addRow(["TOTAL HOURS WORKED", E, E, E, ...dayTotals.map(h => h || E), totalAll, totalBill],
         { size: 12, bold: true }, { top: XLSX_BORDER_THICK, bottom: XLSX_BORDER_THICK });
 
-      addRow(["Mileage:",       E, E, "Hours To / From Time Bank", ...blank(9)]);
+      addRow(["Mileage:",       mileageTotal || E, E, "Hours To / From Time Bank", ...blank(9)]);
       addRow(["Tolls:",         E, E, "Vacation hours",            ...vacDh, vacTotal || E, E]);
-      addRow(["Reimbursables:", E, E, "Sick time",                 ...blank(9)]);
+      addRow(["Reimbursables:", reimbTotal || E, E, "Sick time",   ...sickDh, sickTotal || E, E]);
       addRow([E,                E, E, "Holiday",                   ...holDh, holTotal || E, E]);
 
       addRow(["TOTAL HOURS TO BE PAID", ...blank(10), totalToBePaid, E],
@@ -1466,9 +1500,28 @@ function App() {
           {[["log", "Log time"], ["projects", "Projects"], ["export", "Export"]].map(([id, label]) => (
             <button key={id} onClick={() => setTab(id)} style={s.tab(tab === id)}>{label}</button>
           ))}
-          <div style={{ marginLeft: "auto", fontSize: 12, color: "#9ca3af" }}>
-            {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-          </div>
+          {tab === "log" ? (
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+              <button onClick={() => setSelectedDay(d => offsetDay(d, -1))} title="Previous day" style={{
+                background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                padding: "4px 9px", fontSize: 13, cursor: "pointer", color: "#374151", lineHeight: 1
+              }}>◀</button>
+              <input type="date" value={selectedDay} onChange={e => setSelectedDay(e.target.value)}
+                style={{ ...s.input, width: "auto", padding: "4px 6px", fontSize: 12 }} />
+              <button onClick={() => setSelectedDay(d => offsetDay(d, 1))} title="Next day" style={{
+                background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                padding: "4px 9px", fontSize: 13, cursor: "pointer", color: "#374151", lineHeight: 1
+              }}>▶</button>
+              <button onClick={() => setSelectedDay(todayStr())} style={{
+                background: "transparent", color: "#6b7280", border: "1px solid #e5e7eb",
+                borderRadius: 5, padding: "5px 10px", fontSize: 12, cursor: "pointer", whiteSpace: "nowrap"
+              }}>Today</button>
+            </div>
+          ) : (
+            <div style={{ marginLeft: "auto", fontSize: 12, color: "#9ca3af" }}>
+              {new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1553,6 +1606,25 @@ function App() {
                   fontSize: 10, color: "#9ca3af", padding: "10px 6px", alignSelf: "flex-start"
                 }}>TO DO ▾</button>
               )}
+            </div>
+
+            {/* Day extras: mileage, reimbursables, sick time, vacation — feeds the weekly timesheet footer */}
+            <div style={{ ...s.card, marginBottom: 16, padding: "12px 20px" }}>
+              <label style={s.label}>DAY TOTALS · {dispDate(selectedDay)}</label>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 6 }}>
+                {DAY_EXTRA_FIELDS.map(f => (
+                  <div key={f.key} style={{ display: "flex", alignItems: "center", gap: 7, flex: "1 1 160px", minWidth: 150 }}>
+                    <span style={{ fontSize: 18, flexShrink: 0 }} title={f.label}>{f.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{f.label}</div>
+                      <input type="number" min="0" step={f.step} placeholder="0"
+                        value={dayExtras[selectedDay]?.[f.key] ?? ""}
+                        onChange={e => updateDayExtra(selectedDay, f.key, e.target.value)}
+                        style={{ ...s.input, padding: "4px 8px", fontSize: 13, height: 28 }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {projects.filter(p => p.billable !== false).length === 0 && (
@@ -1887,6 +1959,13 @@ function App() {
             const payrollProjs = PAYROLL_DEFAULTS.filter(p => !projMap[p.id]?.archived);
             const projDayHrs = (projId, date) =>
               weekEntries.filter(e => e.projectId === projId && e.date === date).reduce((s, e) => s + e.hours, 0);
+            // Vacation is a day-level input now, plus any legacy _vacation time-entries logged
+            // before that change. Sick time is day-level input only (never a timeline category).
+            const extraRows = [
+              { key: "_vacation_extra", label: "Vacation", dayHrs: d => projDayHrs("_vacation", d) + (dayExtras[d]?.vacation || 0) },
+              { key: "_sick_extra",     label: "Sick",     dayHrs: d => dayExtras[d]?.sick || 0 },
+              ...payrollProjs.map(p => ({ key: p.id, label: p.name, dayHrs: d => projDayHrs(p.id, d) })),
+            ];
             const projWeekTotal = projId =>
               +previewDates.reduce((s, d) => s + projDayHrs(projId, d), 0).toFixed(2);
             const dayWorkedHrs = date =>
@@ -1976,16 +2055,16 @@ function App() {
                           </tr>
                         );
                       })}
-                      {payrollProjs.length > 0 && (
+                      {extraRows.length > 0 && (
                         <tr><td colSpan={9} style={{ padding: "2px 0" }}><div style={{ borderTop: "1px dashed #e5e7eb" }} /></td></tr>
                       )}
-                      {payrollProjs.map(p => {
-                        const t = projWeekTotal(p.id);
+                      {extraRows.map(row => {
+                        const t = +previewDates.reduce((s, d) => s + row.dayHrs(d), 0).toFixed(2);
                         return (
-                          <tr key={p.id}>
-                            <td style={{ padding: "3px 8px 3px 0", color: "#9ca3af", fontSize: 11 }}>{p.name} (not worked)</td>
+                          <tr key={row.key}>
+                            <td style={{ padding: "3px 8px 3px 0", color: "#9ca3af", fontSize: 11 }}>{row.label} (not worked)</td>
                             {previewDates.map(d => {
-                              const h = projDayHrs(p.id, d);
+                              const h = row.dayHrs(d);
                               return <td key={d} style={numCell(h, true)}>{h > 0 ? fmtHrs(h) : "—"}</td>;
                             })}
                             <td style={numCell(t, true)}>{t > 0 ? fmtHrs(t) : "—"}</td>
