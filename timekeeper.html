@@ -31,6 +31,23 @@
   .tk-entry-block:hover { box-shadow: 0 2px 8px rgba(15,23,42,0.10); }
   .tk-entry-block:hover .tk-delete-btn { opacity: 1; }
   .tk-delete-btn { opacity: 0; transition: opacity 0.12s; }
+  .tk-edge-arrow {
+    position: fixed; top: 50%; transform: translateY(-50%); z-index: 15;
+    background: transparent; border: none; cursor: pointer; display: flex; align-items: center;
+    transition: background 0.12s;
+  }
+  .tk-edge-arrow:hover { background: rgba(15, 23, 42, 0.05); }
+  .tk-edge-arrow-left { left: 0; padding: 10px 6px 10px 2px; border-radius: 0 6px 6px 0; }
+  .tk-edge-arrow-right { right: 0; padding: 10px 2px 10px 6px; border-radius: 6px 0 0 6px; }
+  .tk-edge-tri {
+    width: 0; height: 0;
+    border-top: 34px solid transparent; border-bottom: 34px solid transparent;
+    transition: border-color 0.12s;
+  }
+  .tk-edge-tri-left { border-right: 11px solid #e5e7eb; }
+  .tk-edge-tri-right { border-left: 11px solid #e5e7eb; }
+  .tk-edge-arrow:hover .tk-edge-tri-left { border-right-color: #6b7280; }
+  .tk-edge-arrow:hover .tk-edge-tri-right { border-left-color: #6b7280; }
 </style>
 </head>
 <body>
@@ -1524,6 +1541,17 @@ function App() {
           )}
         </div>
       </div>
+
+      {tab === "log" && (
+        <>
+          <button className="tk-edge-arrow tk-edge-arrow-left" onClick={() => setSelectedDay(d => offsetDay(d, -1))} title="Previous day">
+            <span className="tk-edge-tri tk-edge-tri-left" />
+          </button>
+          <button className="tk-edge-arrow tk-edge-arrow-right" onClick={() => setSelectedDay(d => offsetDay(d, 1))} title="Next day">
+            <span className="tk-edge-tri tk-edge-tri-right" />
+          </button>
+        </>
+      )}
 
       <div style={s.main}>
 
