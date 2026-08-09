@@ -20,6 +20,6 @@ Office templates are in the repo root:
 - `EXAMPLE_TIME SHEET April 26.xls` — weekly Excel timesheet
 - `EXAMPLE_2311 - Job Description - Seaplace.doc` — monthly per-project Word job description
 
-**Excel format:** Columns are `Project / Client Name | Job # | Services | Tasks | Mon–Sun | TOTAL | Billable hours *`. The project `code` field = Job #, `serviceCode` = Services, `taskCode` = Tasks. Footer rows: Continuing Education, AIA Awards, Marketing, Overhead, TOTAL HOURS WORKED, Mileage/Tolls/Reimbursables, TOTAL HOURS TO BE PAID, NAME, WEEK ENDING.
+**Excel format:** Columns are `Project / Client Name | Job # | Services | Tasks | Mon–Sun | TOTAL | Billable hours *`. The project `code` field = Job #, `serviceCode` = Services, `taskCode` = Tasks. Footer rows: Continuing Education, AIA Awards, Marketing, Marketing (Public), Overhead, TOTAL HOURS WORKED, Mileage/Tolls/Reimbursables, TOTAL HOURS TO BE PAID, NAME, WEEK ENDING. Marketing (Public) is our own addition (not in the office template) — the accountant tracks municipal/school-board proposal & RFP/RFQ work separately from general marketing.
 
 **Word format:** One document **per project** (not combined). Header: JOB NAME, JOB #, BILLING PERIOD, SERVICE CODE #, CODE. Body: two-column table of `week ending | Descriptions`, grouped by the Friday week-ending date within the billing month.
