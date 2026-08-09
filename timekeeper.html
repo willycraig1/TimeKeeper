@@ -72,10 +72,12 @@ const NONBILLABLE_DEFAULT = {
 };
 
 const OVERHEAD_DEFAULTS = [
-  { id: "_ce",        name: "Continuing Education", code: "", color: "#8b5cf6", billable: false, overhead: true },
-  { id: "_aia",       name: "AIA Awards",           code: "", color: "#eab308", billable: false, overhead: true },
-  { id: "_marketing", name: "Marketing",             code: "", color: "#f97316", billable: false, overhead: true },
-  { id: "_office",    name: "Office",                code: "", color: "#64748b", billable: false, overhead: true },
+  { id: "_ce",             name: "Continuing Education", code: "", color: "#8b5cf6", billable: false, overhead: true },
+  { id: "_aia",            name: "AIA Awards",           code: "", color: "#eab308", billable: false, overhead: true },
+  { id: "_marketing",      name: "Marketing",             code: "", color: "#f97316", billable: false, overhead: true },
+  // Public: municipal/school board clients — proposals, work assignment forms, RFP/RFQ responses.
+  { id: "_marketing_pub",  name: "Marketing (Public)",    code: "", color: "#0ea5e9", billable: false, overhead: true },
+  { id: "_office",         name: "Office",                code: "", color: "#64748b", billable: false, overhead: true },
 ];
 // Holiday: paid time off, not "hours worked" — kept separate from OVERHEAD_DEFAULTS
 // so it doesn't land in the main overhead block of the weekly sheet, only in its own footer row.
@@ -87,16 +89,18 @@ const PAYROLL_DEFAULTS = [
   { id: "_holiday",  name: "Holiday",  code: "", color: "#f43f5e", billable: false, overhead: true, payroll: true },
 ];
 // Short badge text shown in pickers and entry blocks for overhead projects
-const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _office: "OFF", _vacation: "VAC", _holiday: "HOL" };
-// Excel timesheet row labels match the firm's template (Office → "Overhead")
-const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _office: "Overhead" };
+const OVERHEAD_BADGE = { _ce: "CE", _aia: "AIA", _marketing: "MKT", _marketing_pub: "MKT-P", _office: "OFF", _vacation: "VAC", _holiday: "HOL" };
+// Excel timesheet row labels match the firm's template (Office → "Overhead").
+// Marketing (Public) is our own addition — the accountant tracks it as its own line, not in the template.
+const OVERHEAD_EXCEL_LABEL = { _ce: "Continuing Education", _aia: "AIA Awards", _marketing: "Marketing", _marketing_pub: "Marketing (Public)", _office: "Overhead" };
 
 const STORAGE_KEYS = { projects: "tk_projects_v2", entries: "tk_entries_v3", tasks: "tk_tasks_v1", dayExtras: "tk_day_extras_v1" };
-const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_aia", "_ce"];
+const OVERHEAD_PANEL_ORDER = ["_office", "_marketing", "_marketing_pub", "_aia", "_ce"];
 const PAYROLL_PANEL_ORDER = ["_holiday"];
 const SHOW_TODO_KEY = "tk_show_todo_v1";
 // Marketing/Office carry real narrative work worth writing up; CE/AIA are just hours, no description needed.
-const DESCRIBABLE_OVERHEAD_IDS = ["_marketing", "_office"];
+// Marketing (Public) is proposals/RFP-RFQ responses for municipal & school board clients — real narrative work too.
+const DESCRIBABLE_OVERHEAD_IDS = ["_marketing", "_marketing_pub", "_office"];
 const isDescribable = p => p.billable !== false || DESCRIBABLE_OVERHEAD_IDS.includes(p.id);
 
 // Small day-level fields shown at the bottom of the Log tab — office-template footer fields

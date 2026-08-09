@@ -45,7 +45,7 @@ The intent is to keep this property — single-file, no build — through the pr
   "taskCode": "string",    // Task code (e.g. "CA", "SD") — maps to Tasks column
   "color": "string",       // hex from PALETTE
   "billable": true,        // false on non-billable and overhead projects
-  "overhead": false        // true only on the 4 overhead entries (CE, AIA, Marketing, Office)
+  "overhead": false        // true only on the 5 overhead entries (CE, AIA, Marketing, Marketing (Public), Office)
 }
 ```
 
@@ -56,12 +56,12 @@ The intent is to keep this property — single-file, no build — through the pr
 | Type | `billable` | `overhead` | Excel timesheet | Word descriptions |
 |------|-----------|-----------|-----------------|-------------------|
 | **Billable** | `true` | — | Billable rows | Included |
-| **Overhead** | `false` | `true` | Fixed overhead rows (CE, AIA, Marketing, Overhead) — auto-filled | Excluded |
+| **Overhead** | `false` | `true` | Fixed overhead rows (CE, AIA, Marketing, Marketing (Public), Overhead) — auto-filled | Excluded (Marketing/Marketing (Public)/Office included) |
 | **Offsheet** | `false` | — | Excluded | Excluded |
 
 **Protected IDs** (cannot be deleted):
 - `_nonbillable` — the single offsheet entry (lunch, errands, admin)
-- `_ce`, `_aia`, `_marketing`, `_office` — the four overhead entries
+- `_ce`, `_aia`, `_marketing`, `_marketing_pub`, `_office` — the five overhead entries (`_marketing_pub` = "Marketing (Public)": proposals, work assignment forms, RFP/RFQ responses for municipal & school board clients — tracked as its own line by the accountant, distinct from general/private-client marketing)
 
 All protected entries are pre-seeded on first run and backfilled if missing from stored data.
 
