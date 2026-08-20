@@ -1109,6 +1109,23 @@ function App() {
 
   useEffect(() => { localStorage.setItem(SHOW_TODO_KEY, showTodo); }, [showTodo]);
 
+  // Left/Right arrow keys step the viewed day, mirroring the on-screen day-nav arrows.
+  // Ignored while typing anywhere (inputs, the date picker's own segment nav, textareas,
+  // contentEditable) and while a modal is open, so this never steals a keystroke meant elsewhere.
+  useEffect(() => {
+    if (tab !== "log") return;
+    const onKey = e => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (pending || editing) return;
+      const t = e.target;
+      const tag = t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable) return;
+      setSelectedDay(d => offsetDay(d, e.key === "ArrowLeft" ? -1 : 1));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [tab, pending, editing]);
+
   const projMap = useMemo(() => Object.fromEntries(projects.map(p => [p.id, p])), [projects]);
 
   const dayEntries = useMemo(
