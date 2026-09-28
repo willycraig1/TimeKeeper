@@ -2063,8 +2063,20 @@ function App() {
               <div style={{ ...s.card, marginTop: 14 }}>
 
                 {/* ── Week table ── */}
-                <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em", marginBottom: 10 }}>
-                  WEEK PREVIEW &nbsp;·&nbsp; {shortDate(previewMon)} – {shortDate(previewSun)}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, fontWeight: 500, color: "#9ca3af", letterSpacing: "0.07em" }}>
+                    WEEK PREVIEW &nbsp;·&nbsp; {shortDate(previewMon)} – {shortDate(previewSun)}
+                  </div>
+                  <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                    <button onClick={() => setSelectedDay(d => offsetDay(d, -7))} title="Previous week" style={{
+                      background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                      padding: "2px 8px", fontSize: 12, cursor: "pointer", color: "#374151", lineHeight: 1.4
+                    }}>◀</button>
+                    <button onClick={() => setSelectedDay(d => offsetDay(d, 7))} title="Next week" style={{
+                      background: "transparent", border: "1px solid #e5e7eb", borderRadius: 5,
+                      padding: "2px 8px", fontSize: 12, cursor: "pointer", color: "#374151", lineHeight: 1.4
+                    }}>▶</button>
+                  </div>
                 </div>
                 <div style={{ overflowX: "auto", marginBottom: 20 }}>
                   <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
