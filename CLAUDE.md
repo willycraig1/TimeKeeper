@@ -16,7 +16,7 @@ If you're an AI session picking this up, read these in order before making chang
 
 ## Export targets (templates received April 2026)
 
-Office templates are in the repo root:
+Office templates are in the project folder (**local only, gitignored**: this repo is public, so firm files are never committed):
 - `EXAMPLE_TIME SHEET April 26.xls` — weekly Excel timesheet
 - `EXAMPLE_2311 - Job Description - Seaplace.doc` — monthly per-project Word job description
 

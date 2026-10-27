@@ -1,1 +1,6 @@
 .claude/
+
+# Firm templates and billing exports: local only (this repo is public)
+EXAMPLE_*
+Exports/
+.DS_Store
